@@ -55,6 +55,7 @@ from .models import ok_result as _ok
 from .patch_ops import git_apply_command, git_apply_prefix, normalize_patch_text
 from .peer_transfer import close_peer_receiver, open_peer_receiver
 from .playwright_ops import playwright_run_script
+from .restart_ops import restart_status, schedule_restart
 from .search_ops import grep, tree
 from .settings import get_settings, safe_settings_dump
 from .shell_ops import (
@@ -73,6 +74,7 @@ from .shell_ops import (
     start_shell,
 )
 from .state_store import get_state_store
+from .system_info import machine_hardware_info, machine_resource_snapshot
 from .tmux_helper import persistent_shell_backend_info
 from .transfer_ops import (
     DEFAULT_TRANSFER_CHUNK_BYTES,
@@ -94,7 +96,7 @@ REMOTE_JOIN_PATH = "/join"
 REMOTE_POWERSHELL_JOIN_PATH = REMOTE_JOIN_PATH + ".ps1"
 REMOTE_API_PREFIX = "/remote"
 REMOTE_WORKER_BUNDLE_PATH = "/remote/worker-bundle.tgz"
-REMOTE_WORKER_POLL_PROTOCOL_VERSION = 1
+REMOTE_WORKER_POLL_PROTOCOL_VERSION = 2
 _WORKER_CONNECT_TIMEOUT_S = 10.0
 _WORKER_POLL_TIMEOUT_GRACE_S = 10.0
 # The remote worker is designed to start on machines that only have Python, curl,
@@ -127,6 +129,7 @@ REMOTE_NON_CANCELLABLE_WORKER_TOOLS = frozenset(
         "transfer_put_url",
         "transfer_get_url",
         "transfer_close_receiver",
+        "restart",
     }
 )
 
@@ -686,9 +689,14 @@ class RemoteManager:
                 "required": worker_version != __version__,
                 "version": __version__,
             }
+        elif protocol_version > 0:
+            upgrade = {"required": True, "version": __version__}
         with self._state_lock:
             worker.status = "online"
             worker.last_seen = _utc()
+            reported_info = payload.get("info")
+            if isinstance(reported_info, dict):
+                worker.info.update(reported_info)
             if worker_version:
                 worker.info["lsm_version"] = worker_version
             if protocol_version:
@@ -734,10 +742,14 @@ class RemoteManager:
 
     async def heartbeat(self, token: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
         worker = self._worker_by_token(token)
-        job_id = str((payload or {}).get("job_id") or "")
+        payload = payload or {}
+        job_id = str(payload.get("job_id") or "")
         with self._state_lock:
             worker.status = "online"
             worker.last_seen = _utc()
+            reported_info = payload.get("info")
+            if isinstance(reported_info, dict):
+                worker.info.update(reported_info)
             name = worker.name
             self._prune_cancelled_jobs_locked()
             cancelled = bool(job_id and job_id in self.cancelled_jobs)
@@ -1206,6 +1218,8 @@ async def _run_python(code: str, cwd: str = ".", timeout_s: int = 60) -> dict[st
 WORKER_ENVIRONMENT_TOOLS = frozenset(
     {
         "environment_info",
+        "restart",
+        "restart_status",
     }
 )
 WORKER_COMMAND_TOOLS = frozenset(
@@ -1566,6 +1580,16 @@ async def execute_worker_tool(tool: str, args: dict[str, Any]) -> Any:
 
 
 async def _execute_environment_worker_tool(tool: str, args: dict[str, Any]) -> Any:
+    if tool == "restart":
+        return await asyncio.to_thread(
+            schedule_restart,
+            "worker",
+            delay_s=max(int(args.get("delay_s", 8)), 12),
+            health_timeout_s=args.get("health_timeout_s", 30),
+            reason=args.get("reason"),
+        )
+    if tool == "restart_status":
+        return await asyncio.to_thread(restart_status, "worker", args.get("restart_id"))
     if tool == "environment_info":
         public_settings = safe_settings_dump()
         public_settings["default_timeout_s"] = PUBLIC_RUN_SHELL_DEFAULT_TIMEOUT_S
@@ -1911,6 +1935,7 @@ def worker_capabilities() -> list[str]:
         "python",
         "playwright",
         "browser_sessions",
+        "restart",
     ]
 
 
@@ -1924,13 +1949,22 @@ def worker_info(workdir: str) -> dict[str, Any]:
         "python": sys.version.split()[0],
         "platform": sys.platform,
         "persistent_shell": persistent_shell_backend_info(),
+        **machine_hardware_info(),
+        **machine_resource_snapshot(workdir),
     }
+
+
+def _worker_resource_snapshot() -> dict[str, Any]:
+    """Collect worker telemetry without constructing controller-oriented settings."""
+    workdir = os.getenv("LOCAL_SHELL_MCP_WORKSPACE_ROOT") or os.getcwd()
+    return machine_resource_snapshot(workdir)
 
 
 def _worker_poll_payload(poll_request_timeout_s: float | None = None) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "protocol_version": REMOTE_WORKER_POLL_PROTOCOL_VERSION,
         "worker_version": __version__,
+        "info": _worker_resource_snapshot(),
     }
     if poll_request_timeout_s is not None:
         payload["poll_timeout_s"] = max(
@@ -2254,7 +2288,10 @@ async def _execute_worker_job_with_heartbeat(
                 response = await asyncio.to_thread(
                     _worker_post_json,
                     f"{server}{REMOTE_API_PREFIX}/heartbeat",
-                    {"job_id": job.get("id")},
+                    {
+                        "job_id": job.get("id"),
+                        "info": _worker_resource_snapshot(),
+                    },
                     headers,
                     30,
                 )

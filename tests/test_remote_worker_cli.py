@@ -52,6 +52,7 @@ def test_enrollment_payload_overrides_and_restores_existing_environment(tmp_path
 
 @pytest.mark.asyncio
 async def test_run_worker_overrides_stale_scope(tmp_path, monkeypatch):
+    _configure(tmp_path, monkeypatch)
     monkeypatch.setenv("LOCAL_SHELL_MCP_WORKSPACE_ROOT", "/stale/workspace")
     monkeypatch.setenv("LOCAL_SHELL_MCP_ALLOW_FULL_CONTAINER", "false")
     monkeypatch.setattr(cli.remote, "worker_capabilities", lambda: [])
@@ -78,6 +79,7 @@ async def test_run_worker_overrides_stale_scope(tmp_path, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_run_worker_reports_version_and_applies_poll_upgrade(tmp_path, monkeypatch):
+    _configure(tmp_path, monkeypatch)
     monkeypatch.setenv("LOCAL_SHELL_MCP_WORKSPACE_ROOT", str(tmp_path))
     monkeypatch.setenv("LOCAL_SHELL_MCP_ALLOW_FULL_CONTAINER", "false")
     monkeypatch.setattr(cli.remote, "worker_capabilities", lambda: [])
@@ -116,11 +118,10 @@ async def test_run_worker_reports_version_and_applies_poll_upgrade(tmp_path, mon
 
     assert calls[1][3] == 27
     poll_payload = calls[1][1]
-    assert poll_payload == {
-        "protocol_version": cli.remote.REMOTE_WORKER_POLL_PROTOCOL_VERSION,
-        "worker_version": cli.remote.__version__,
-        "poll_timeout_s": 17,
-    }
+    assert poll_payload["protocol_version"] == cli.remote.REMOTE_WORKER_POLL_PROTOCOL_VERSION
+    assert poll_payload["worker_version"] == cli.remote.__version__
+    assert poll_payload["poll_timeout_s"] == 17
+    assert isinstance(poll_payload["info"], dict)
 
 
 @pytest.mark.asyncio
@@ -349,7 +350,8 @@ def test_load_config_rejects_non_mapping_legacy_identity(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_connect_enrolls_then_reexecs_without_invite(monkeypatch):
+async def test_connect_enrolls_then_reexecs_without_invite(tmp_path, monkeypatch):
+    _configure(tmp_path, monkeypatch)
     calls = []
 
     async def fake_enroll(**kwargs):

@@ -88,7 +88,7 @@ def test_run_mcp_streamable_and_sse(monkeypatch):
         def add_middleware(self, middleware, **kwargs):
             self.middleware.append((middleware, kwargs))
 
-    monkeypatch.setattr(main_module, "_with_oauth_routes", lambda inner: FakeApp())
+    monkeypatch.setattr(main_module, "_with_oauth_routes", lambda inner, mcp=None: FakeApp())
     for auth_mode, expected_middleware_count in (("none", 1), ("oauth", 2)):
         sse = FakeMcp(sse=True)
         monkeypatch.setattr(settings_module, "get_settings", lambda mode=auth_mode: _settings(auth_mode=mode))
@@ -119,7 +119,7 @@ def test_build_mcp_http_app_applies_timeout_and_middleware(monkeypatch):
             self.middleware.append((middleware, kwargs))
 
     fake_app = FakeApp()
-    monkeypatch.setattr(main_module, "_with_oauth_routes", lambda inner: fake_app)
+    monkeypatch.setattr(main_module, "_with_oauth_routes", lambda inner, mcp=None: fake_app)
     monkeypatch.setattr(settings_module, "get_settings", lambda: _settings(auth_mode="oauth"))
     mcp = FakeInnerMcp()
 

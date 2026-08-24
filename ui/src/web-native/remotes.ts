@@ -1,4 +1,11 @@
-import type { InvitePayload, Machine, MachinePayload } from "../types"
+import type {
+  ContainerClientInvitePayload,
+  ContainerClientSession,
+  ContainerClientsPayload,
+  InvitePayload,
+  Machine,
+  MachinePayload,
+} from "../types"
 import {
   BaseController,
   button,
@@ -6,6 +13,7 @@ import {
   copyText,
   escapeHtml,
   formatAge,
+  formatDate,
   highlightedHtml,
   openFormDialog,
   statusClass,
@@ -17,10 +25,13 @@ export class RemotesController extends BaseController {
   private selected = 0
   private enabled = true
   private loading = false
+  private containerClients: ContainerClientSession[] = []
+  private selectedContainerClient = 0
 
   mount(root: HTMLElement): void {
     this.root = root
     this.root.innerHTML = `<section class="native-page remotes-page"><div class="remote-summary" data-role="remote-summary"></div><div class="native-toolbar"><div><strong>Remote workers</strong><span class="toolbar-detail">Persistent worker identities and one-time invitations</span></div><div class="toolbar-actions">${button("New invite", "invite", { icon: "+", primary: true })}${button("Rename", "rename", { disabled: true })}${button("Revoke", "revoke", { danger: true, disabled: true })}</div></div><div class="remotes-layout"><section class="native-panel remote-list-panel"><header><div><h3>Remote nodes</h3><p data-role="remote-count">Loading…</p></div></header><div data-role="remote-list"><div class="native-loading">Loading remote nodes…</div></div></section><section class="native-panel remote-detail-panel"><header><div><h3>Node details</h3><p>Version, workdir, capabilities, and system information</p></div></header><div class="remote-detail" data-role="remote-detail"><div class="native-empty">No node selected</div></div></section></div></section>`
+    this.root.querySelector<HTMLElement>(".remotes-page")?.insertAdjacentHTML("beforeend", `<section class="native-panel container-clients-panel"><header><div><h3>Container clients</h3><p>One-time installation and revocable persistent JSON sessions</p></div><div class="toolbar-actions">${button("Install client", "container-invite", { icon: "+", primary: true })}${button("Revoke client", "container-revoke", { danger: true, disabled: true })}</div></header><div data-role="container-client-list"><div class="native-loading">Loading container clients…</div></div></section>`)
     this.listen(root, "click", (event) => this.onClick(event))
     this.listen(root, "keydown", (event) => this.onListKeyDown(event as KeyboardEvent))
     this.every(() => void this.refresh(), 4_000)
@@ -31,13 +42,22 @@ export class RemotesController extends BaseController {
     if (this.loading) return
     this.loading = true
     try {
-      const payload = await this.context.api.get<MachinePayload>("/remotes")
+      const [payload, clients] = await Promise.all([
+        this.context.api.get<MachinePayload>("/remotes"),
+        this.context.api.get<ContainerClientsPayload>("/container-clients"),
+      ])
       if (this.destroyed) return
       const selectedName = this.machines[this.selected]?.name
+      const selectedClientId = this.containerClients[this.selectedContainerClient]?.client_id
       this.machines = payload.machines
+      this.containerClients = clients.sessions
       this.enabled = payload.enabled !== false
       this.selected = Math.max(0, selectedName ? this.machines.findIndex((machine) => machine.name === selectedName) : 0)
       if (this.selected < 0) this.selected = 0
+      this.selectedContainerClient = Math.max(0, selectedClientId
+        ? this.containerClients.findIndex((client) => client.client_id === selectedClientId)
+        : 0)
+      if (this.selectedContainerClient < 0) this.selectedContainerClient = 0
       this.render()
     } catch (error) {
       this.context.notify(`Remotes: ${error instanceof Error ? error.message : String(error)}`, "error")
@@ -82,6 +102,52 @@ export class RemotesController extends BaseController {
     if (rename) rename.disabled = !current || !this.enabled
     if (revoke) revoke.disabled = !current || !this.enabled
     if (invite) invite.disabled = !this.enabled
+    this.renderContainerClients()
+  }
+
+  private renderContainerClients(): void {
+    const list = this.root.querySelector<HTMLElement>("[data-role=container-client-list]")
+    if (list) {
+      list.innerHTML = this.containerClients.length
+        ? `<table class="native-table container-clients-table"><thead><tr><th>State</th><th>Client ID</th><th>Version</th><th>Created</th><th>Expires</th></tr></thead><tbody>${this.containerClients.map((client, index) => `<tr class="${index === this.selectedContainerClient ? "selected" : ""}" data-container-client-index="${index}" tabindex="${index === this.selectedContainerClient ? "0" : "-1"}"><td><span class="status-chip ${client.active ? "success" : "error"}">${client.active ? "ACTIVE" : client.revoked_at ? "REVOKED" : "EXPIRED"}</span></td><td><code>${escapeHtml(client.client_id)}</code></td><td>${escapeHtml(client.client_version)}</td><td>${formatDate(client.created_at)}</td><td>${formatDate(client.expires_at)}</td></tr>`).join("")}</tbody></table>`
+        : '<div class="native-empty"><strong>No container clients</strong><span>Create a one-time invitation for a persistent JSON-only client.</span></div>'
+    }
+    const revoke = this.root.querySelector<HTMLButtonElement>("[data-action=container-revoke]")
+    if (revoke) revoke.disabled = !this.containerClients[this.selectedContainerClient]?.active
+  }
+
+  private async createContainerInvite(): Promise<void> {
+    try {
+      const invite = await this.context.api.send<ContainerClientInvitePayload>(
+        "/container-clients",
+        "POST",
+        {},
+      )
+      await this.showInvite(invite)
+      await this.refresh()
+    } catch (error) {
+      this.context.notify(`Container invite: ${error instanceof Error ? error.message : String(error)}`, "error")
+    }
+  }
+
+  private async revokeContainerClient(): Promise<void> {
+    const client = this.containerClients[this.selectedContainerClient]
+    if (!client || !client.active || !await confirmDialog(
+      `Revoke ${client.client_id}?`,
+      "The client bearer stops working immediately and cannot be restored.",
+      "Revoke client",
+    )) return
+    try {
+      await this.context.api.send(
+        `/container-clients/${encodeURIComponent(client.client_id)}/revoke`,
+        "POST",
+        {},
+      )
+      this.context.notify(`Revoked ${client.client_id}`, "success")
+      await this.refresh()
+    } catch (error) {
+      this.context.notify(`Container revoke: ${error instanceof Error ? error.message : String(error)}`, "error")
+    }
   }
 
   private async invite(): Promise<void> {
@@ -96,7 +162,7 @@ export class RemotesController extends BaseController {
     }
   }
 
-  private async showInvite(invite: InvitePayload): Promise<void> {
+  private async showInvite(invite: Pick<InvitePayload, "command" | "expires_at">): Promise<void> {
     return new Promise((resolve) => {
       const overlay = document.createElement("div")
       overlay.className = "native-dialog-overlay"
@@ -143,6 +209,12 @@ export class RemotesController extends BaseController {
 
   private onClick(event: MouseEvent): void {
     const target = event.target as HTMLElement
+    const containerIndex = target.closest<HTMLElement>("[data-container-client-index]")?.dataset.containerClientIndex
+    if (containerIndex !== undefined) {
+      this.selectedContainerClient = Number(containerIndex)
+      this.renderContainerClients()
+      return
+    }
     const index = target.closest<HTMLElement>("[data-remote-index]")?.dataset.remoteIndex
     if (index !== undefined) {
       this.selected = Number(index)
@@ -153,6 +225,8 @@ export class RemotesController extends BaseController {
     if (action === "invite") void this.invite()
     else if (action === "rename") void this.rename()
     else if (action === "revoke") void this.revoke()
+    else if (action === "container-invite") void this.createContainerInvite()
+    else if (action === "container-revoke") void this.revokeContainerClient()
   }
 
   private focusRemote(index: number): void {
@@ -187,4 +261,3 @@ export class RemotesController extends BaseController {
     this.selectRemote(nextIndex, true)
   }
 }
-

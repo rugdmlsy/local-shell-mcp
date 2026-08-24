@@ -198,6 +198,12 @@ button.summary-card { cursor: pointer; }
 .detail-json pre { max-height: 320px; margin: 0; padding: 10px; overflow: auto; color: #687184; background: #f7f8fa; border: 1px solid #eceef2; border-radius: 8px; font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
 .invite-command { display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 8px; align-items: center; padding: 10px; color: #dbe5f3; background: #0c1422; border: 1px solid #29364c; border-radius: 8px; }
 .invite-command code { overflow: auto; font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; word-break: break-all; }
+.container-clients-panel { display: grid; grid-template-rows: auto minmax(0,1fr); min-height: 220px; }
+.container-clients-panel > div { min-height: 0; overflow: auto; }
+.container-clients-table th:nth-child(1) { width: 13%; }
+.container-clients-table th:nth-child(2) { width: 28%; }
+.container-clients-table th:nth-child(3) { width: 17%; }
+.container-clients-table th:nth-child(4), .container-clients-table th:nth-child(5) { width: 21%; }
 
 /* Logical Sessions — durable task list + checkpoint/plan/activity detail */
 .sessions-summary { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 9px; }
@@ -365,6 +371,10 @@ button.summary-card { cursor: pointer; }
   .remote-table th:nth-child(1) { width: 24%; }
   .remote-table th:nth-child(2) { width: 42%; }
   .remote-table th:nth-child(5) { width: 34%; }
+  .container-clients-table th:nth-child(3), .container-clients-table td:nth-child(3), .container-clients-table th:nth-child(4), .container-clients-table td:nth-child(4) { display: none; }
+  .container-clients-table th:nth-child(1) { width: 26%; }
+  .container-clients-table th:nth-child(2) { width: 44%; }
+  .container-clients-table th:nth-child(5) { width: 30%; }
   .sessions-table th:nth-child(3), .sessions-table td:nth-child(3) { display: none; }
   .sessions-table th:nth-child(1) { width: 25%; }
   .sessions-table th:nth-child(2) { width: 50%; }

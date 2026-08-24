@@ -5,7 +5,7 @@ import os
 import sys
 
 
-def _with_oauth_routes(inner_app):  # noqa: ANN001
+def _with_oauth_routes(inner_app, mcp=None):  # noqa: ANN001
     from contextlib import asynccontextmanager
 
     from starlette.applications import Starlette
@@ -51,6 +51,10 @@ def _with_oauth_routes(inner_app):  # noqa: ANN001
         routes[2:2] = ui_routes()
     if settings.remote_enabled:
         routes[2:2] = remote_routes()
+    if mcp is not None:
+        from .container_client import container_client_routes
+
+        routes[2:2] = container_client_routes(mcp)
     return Starlette(
         routes=routes,
         lifespan=lifespan,
@@ -72,7 +76,7 @@ def _build_mcp_http_app(mcp):  # noqa: ANN001
     if session_manager is not None and hasattr(session_manager, "session_idle_timeout"):
         session_manager.session_idle_timeout = max(1, settings.mcp_session_idle_timeout_s)
 
-    app = _with_oauth_routes(inner)
+    app = _with_oauth_routes(inner, mcp)
     if session_manager is not None:
         app.add_middleware(
             McpSessionLimitMiddleware,
@@ -116,7 +120,7 @@ def run_mcp() -> None:
     if hasattr(mcp, "sse_app"):
         from .auth import AuthMiddleware, RequestBodyLimitMiddleware
 
-        app = _with_oauth_routes(mcp.sse_app())
+        app = _with_oauth_routes(mcp.sse_app(), mcp)
         if settings.auth_mode != "none":
             app.add_middleware(AuthMiddleware)
         app.add_middleware(RequestBodyLimitMiddleware)
@@ -153,6 +157,11 @@ def run_http() -> None:
 
 def main(argv: list[str] | None = None) -> None:
     argv = sys.argv[1:] if argv is None else list(argv)
+    if argv and argv[0] == "restart-supervisor":
+        from .restart_ops import run_restart_supervisor_cli
+
+        run_restart_supervisor_cli(argv[1:])
+        return
     if argv and argv[0] == "job-runner":
         from .jobs import run_job_runner_cli
 

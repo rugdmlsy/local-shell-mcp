@@ -78,6 +78,10 @@ _POSITIVE_INTEGER_SETTINGS = (
     "remote_transfer_s3_presign_ttl_s",
     "remote_max_pending_jobs",
     "remote_cancelled_job_ttl_s",
+    "container_client_invite_ttl_s",
+    "container_client_token_ttl_s",
+    "container_client_max_sessions",
+    "container_client_max_concurrent_calls",
     "mcp_session_idle_timeout_s",
     "mcp_max_sessions",
     "oauth_code_ttl_s",
@@ -247,6 +251,7 @@ _RESERVED_UI_PATHS = {
     "/.well-known",
     "/download",
     "/remote",
+    "/client",
     "/join",
     "/healthz",
     "/readyz",
@@ -420,6 +425,13 @@ if _PYDANTIC_AVAILABLE:
         remote_transfer_s3_region: str | None = None
         remote_transfer_s3_endpoint_url: str | None = None
         remote_transfer_s3_presign_ttl_s: int = 3600
+
+        # Persistent JSON-only clients bootstrap with a short-lived invitation,
+        # then keep only an owner-readable bearer configuration on the client.
+        container_client_invite_ttl_s: int = 600
+        container_client_token_ttl_s: int = 86_400
+        container_client_max_sessions: int = 256
+        container_client_max_concurrent_calls: int = 4
 
         shell_executable: str = Field(default_factory=default_shell_executable)
         shell_env_blocklist: Annotated[list[str], NoDecode] = Field(
@@ -648,6 +660,11 @@ else:
         remote_transfer_s3_region: str | None = None
         remote_transfer_s3_endpoint_url: str | None = None
         remote_transfer_s3_presign_ttl_s: int = 3600
+
+        container_client_invite_ttl_s: int = 600
+        container_client_token_ttl_s: int = 86_400
+        container_client_max_sessions: int = 256
+        container_client_max_concurrent_calls: int = 4
 
         shell_executable: str = field(default_factory=default_shell_executable)
         shell_env_blocklist: list[str] = field(default_factory=lambda: ["CLOUDFLARE_TUNNEL_TOKEN"])

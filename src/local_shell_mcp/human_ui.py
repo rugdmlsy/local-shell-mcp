@@ -29,6 +29,7 @@ from starlette.websockets import WebSocket, WebSocketDisconnect
 from . import __version__
 from .audit import get_audit_entry, query_audit, suppress_audit
 from .auth import Principal, require_scopes, verify_request
+from .container_client import container_client_manager
 from .fs_ops import (
     FileConflictError,
     delete_path,
@@ -41,7 +42,7 @@ from .fs_ops import (
 from .image_ops import ImageFile, assert_view_image_size, detect_image_type, make_image_preview
 from .jobs import list_jobs
 from .live_channel import get_live_channel_manager, live_id_from_claims
-from .oauth import ALL_OAUTH_SCOPES
+from .oauth import ALL_OAUTH_SCOPES, public_base_url
 from .remote import remote_manager
 from .session_runtime import get_session_runtime_manager
 from .settings import get_settings
@@ -1442,6 +1443,33 @@ async def api_remote_action(request: Request) -> Response:
         return _json_error(exc)
 
 
+async def api_container_clients(request: Request) -> Response:
+    """List persistent JSON clients or issue one short-lived installation invite."""
+    try:
+        _require_ui_scopes(request, *UI_FULL_SCOPES)
+        if request.method == "GET":
+            return _json_ok(container_client_manager().list_sessions())
+        result = await container_client_manager().create_invite(
+            base_url=public_base_url(request)
+        )
+        return _json_ok(result)
+    except Exception as exc:
+        return _json_error(exc)
+
+
+async def api_container_client_revoke(request: Request) -> Response:
+    try:
+        _require_ui_scopes(request, *UI_FULL_SCOPES)
+        client_id = str(request.path_params.get("client_id") or "")
+        if not client_id:
+            raise ValueError("client_id is required")
+        return _json_ok(container_client_manager().revoke(client_id))
+    except KeyError as exc:
+        return _json_error(exc, status_code=404)
+    except Exception as exc:
+        return _json_error(exc)
+
+
 def _websocket_token(websocket: WebSocket) -> str | None:
     protocols = [item.strip() for item in websocket.headers.get("sec-websocket-protocol", "").split(",")]
     for protocol in protocols:
@@ -2732,4 +2760,14 @@ def ui_routes() -> list[Any]:
         Route(UI_API_PREFIX + "/audit/detail", api_audit_detail, methods=["GET"]),
         Route(UI_API_PREFIX + "/remotes", api_remotes, methods=["GET", "POST"]),
         Route(UI_API_PREFIX + "/remotes/{action}", api_remote_action, methods=["POST"]),
+        Route(
+            UI_API_PREFIX + "/container-clients",
+            api_container_clients,
+            methods=["GET", "POST"],
+        ),
+        Route(
+            UI_API_PREFIX + "/container-clients/{client_id}/revoke",
+            api_container_client_revoke,
+            methods=["POST"],
+        ),
     ]

@@ -167,6 +167,28 @@ export interface InvitePayload {
   command: string
 }
 
+export interface ContainerClientSession {
+  client_id: string
+  created_at: number
+  expires_at: number
+  client_version: string
+  revoked_at?: number | null
+  active: boolean
+}
+
+export interface ContainerClientsPayload {
+  sessions: ContainerClientSession[]
+}
+
+export interface ContainerClientInvitePayload {
+  invite: string
+  created_at: number
+  expires_at: number
+  ttl_s: number
+  install_url: string
+  command: string
+}
+
 export interface BootstrapPayload {
   version: Record<string, unknown>
   machines: MachinePayload

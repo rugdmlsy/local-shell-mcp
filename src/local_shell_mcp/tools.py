@@ -77,6 +77,8 @@ from .remote_transfer import (
     get_upload_ticket_status,
     revoke_transfer_ticket,
 )
+from .restart_ops import restart_status as get_restart_status
+from .restart_ops import schedule_restart
 from .search_ops import grep, tree
 from .session_runtime import (
     SESSION_IN_FLIGHT_LEASE_S,
@@ -1209,6 +1211,8 @@ MACHINE_CAPABLE_TOOL_NAMES = {
     "browser_snapshot",
     "browser_act",
     "browser_run_script",
+    "restart",
+    "restart_status",
 }
 
 LOCAL_ONLY_TOOL_NAMES = {
@@ -3028,6 +3032,7 @@ def _current_principal_subject() -> str:
 def _register_maintenance_tools(mcp: FastMCP, read_only_tool: ToolAnnotations) -> None:
     shell_read_meta = _oauth_meta(["shell:read"])
     shell_write_meta = _oauth_meta(["shell:read", "shell:write"])
+    shell_execute_meta = _oauth_meta(["shell:read", "shell:execute"])
 
     @mcp.tool(structured_output=True, meta=shell_write_meta)
     async def session_manage(
@@ -3113,6 +3118,52 @@ def _register_maintenance_tools(mcp: FastMCP, read_only_tool: ToolAnnotations) -
             status=status,
             text=text,
             note=note,
+        )
+
+    @mcp.tool(structured_output=True, meta=shell_execute_meta)
+    async def restart(
+        machine: str | None = None,
+        delay_s: int = 8,
+        health_timeout_s: int = 30,
+        reason: str | None = None,
+        purpose: str | None = None,
+        explanation: str | None = None,
+    ) -> ToolResult:
+        """Safely restart the controller or one remote worker through a one-shot supervisor."""
+        _audit_tool_purpose("restart", purpose, explanation)
+        if machine:
+            return await _remote_call(
+                get_settings(),
+                machine,
+                "restart",
+                {
+                    "delay_s": delay_s,
+                    "health_timeout_s": health_timeout_s,
+                    "reason": reason,
+                },
+                30,
+            )
+        return await _tool_call(
+            asyncio.to_thread,
+            schedule_restart,
+            "controller",
+            delay_s=delay_s,
+            health_timeout_s=health_timeout_s,
+            reason=reason,
+        )
+
+    @mcp.tool(structured_output=True, annotations=read_only_tool, meta=shell_read_meta)
+    async def restart_status(
+        restart_id: str | None = None,
+        machine: str | None = None,
+    ) -> ToolResult:
+        """Return the latest restart record, or one restart by id."""
+        if machine:
+            return await _remote_call(
+                get_settings(), machine, "restart_status", {"restart_id": restart_id}, 15
+            )
+        return await _tool_call(
+            asyncio.to_thread, get_restart_status, "controller", restart_id
         )
 
     @mcp.tool(structured_output=True, annotations=read_only_tool, meta=shell_read_meta)

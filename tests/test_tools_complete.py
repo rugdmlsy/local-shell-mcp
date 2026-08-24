@@ -212,6 +212,8 @@ async def test_all_public_tool_wrappers_local_and_remote(tmp_path, monkeypatch):
     monkeypatch.setattr(downloads, "create_share_link", sync_value)
     monkeypatch.setattr(downloads, "list_share_links", sync_value)
     monkeypatch.setattr(downloads, "revoke_share_link", sync_value)
+    monkeypatch.setattr(tools, "schedule_restart", sync_value)
+    monkeypatch.setattr(tools, "get_restart_status", sync_value)
 
     mcp = tools.build_mcp()
     local_cases = {
@@ -264,6 +266,8 @@ async def test_all_public_tool_wrappers_local_and_remote(tmp_path, monkeypatch):
         "browser_snapshot": {"session_id": "missing"},
         "browser_act": {"session_id": "missing", "actions": [{"action": "wait"}]},
         "browser_run_script": {"script": "print(1)"},
+        "restart": {"purpose": "test"},
+        "restart_status": {},
         "audit_tail": {},
         "remote_manage": {"action": "list"},
     }
@@ -317,6 +321,8 @@ async def test_all_public_tool_wrappers_local_and_remote(tmp_path, monkeypatch):
         "browser_snapshot": {"session_id": "s"},
         "browser_act": {"session_id": "s", "actions": [{"action": "wait"}]},
         "browser_run_script": {"script": "x"},
+        "restart": {},
+        "restart_status": {},
     }
     for name, kwargs in remote_cases.items():
         result = await _raw_tool(mcp, name)(**kwargs, machine="node")

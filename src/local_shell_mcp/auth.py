@@ -29,6 +29,10 @@ PUBLIC_PATHS = {
     "/remote/poll",
     "/remote/heartbeat",
     "/remote/result",
+    "/client/install.sh",
+    "/client/v1/manifest.json",
+    "/client/v1/lsm",
+    "/client/v1/register",
 }
 HUMAN_UI_API_PREFIX = "/api/ui/"
 LIVE_UI_API_PREFIX = "/api/live/"

@@ -1,0 +1,32 @@
+# Public values only. Keep OAuth secrets in service.env (mode 0600).
+host: 127.0.0.1
+port: 8765
+mode: mcp
+public_base_url: https://mcp.example.com
+workspace_root: /srv/morrow/workspaces
+state_dir: /home/morrow/.config/local-shell-mcp/state-v4.2
+audit_log_path: /home/morrow/.config/local-shell-mcp/state-v4.2/audit.jsonl
+agent_config_dir: /home/morrow/.config/local-shell-mcp/state-v4.2/agent_config
+
+auth_mode: oauth
+auth_bypass_localhost: true
+require_auth_for_mcp_discovery: true
+
+# The VPS remains an execution target. Do not enable remote-only/stateless mode.
+disable_local: false
+remote_enabled: true
+stateless_controller: false
+state_backend: file
+allow_full_container: false
+
+logical_sessions_enabled: true
+live_workspace_enabled: false
+ui_enabled: true
+ui_path: /ui
+file_download_enabled: true
+
+shell_env_blocklist:
+  - CLOUDFLARE_TUNNEL_TOKEN
+shell_env_blocked_prefixes:
+  - LOCAL_SHELL_MCP_
+  - DOCKER_

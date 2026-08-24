@@ -45,6 +45,8 @@ CORE_TOOL_NAMES = {
     "browser_snapshot",
     "browser_act",
     "browser_run_script",
+    "restart",
+    "restart_status",
     "audit_tail",
 }
 
@@ -210,6 +212,8 @@ async def test_machine_capable_tools_use_optional_machine_arguments(tmp_path, mo
         "browser_snapshot",
         "browser_act",
         "browser_run_script",
+        "restart",
+        "restart_status",
     }
 
     for name in machine_capable:
@@ -267,6 +271,7 @@ async def test_risky_tools_accept_purpose_and_explanation(tmp_path, monkeypatch)
         "file_edit",
         "file_delete",
         "file_patch",
+        "restart",
         }
 
     for name in names:

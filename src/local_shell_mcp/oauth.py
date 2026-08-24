@@ -790,19 +790,31 @@ def issue_access_token(
     resource: str,
     subject: str = "local-user",
     issuer: str | None = None,
+    expires_in_s: int | None = None,
+    additional_claims: dict[str, Any] | None = None,
 ) -> str:
+    """Issue a bearer while keeping identity and audience claims authoritative.
+
+    Specialized first-party clients may add revocation metadata and request a
+    shorter lifetime than the interactive OAuth default.  Callers cannot replace
+    the issuer, subject, audience, client, scope, or issuance timestamp.
+    """
     settings = get_settings()
     now = int(time.time())
-    payload = {
+    payload = dict(additional_claims or {})
+    payload.update({
         "iss": (issuer or issuer_url()).rstrip("/"),
         "sub": subject,
         "aud": resource,
         "iat": now,
         "client_id": client_id,
         "scope": scope,
-    }
-    if settings.oauth_access_token_ttl_s > 0:
-        payload["exp"] = now + settings.oauth_access_token_ttl_s
+    })
+    lifetime = settings.oauth_access_token_ttl_s if expires_in_s is None else int(expires_in_s)
+    if lifetime > 0:
+        payload["exp"] = now + lifetime
+    else:
+        payload.pop("exp", None)
     return jwt.encode(payload, settings.oauth_jwt_secret, algorithm="HS256")
 
 

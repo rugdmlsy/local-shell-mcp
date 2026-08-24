@@ -21,6 +21,18 @@ env:
   PIP_DISABLE_PIP_VERSION_CHECK: "1"
 
 jobs:
+  secrets:
+    name: Security / secret scan
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout full history
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Scan repository history for secrets
+        uses: gitleaks/gitleaks-action@v2
+
   static:
     name: Static / lint, docs, schemas
     runs-on: ubuntu-24.04
@@ -33,6 +45,15 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Verify lock file is current and reproducible
+        run: |
+          set -euxo pipefail
+          uv lock --check
+          uv sync --frozen --extra dev --extra docs
 
       - name: Install system tools
         run: |

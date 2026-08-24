@@ -1,0 +1,18 @@
+[Unit]
+Description=Local Shell MCP controller
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=morrow
+Group=morrow
+WorkingDirectory=/srv/morrow/workspaces
+Environment=HOME=/home/morrow
+ExecStart=/home/morrow/.config/local-shell-mcp/run-host-vps.sh
+Restart=on-failure
+RestartSec=3
+KillMode=control-group
+
+[Install]
+WantedBy=multi-user.target

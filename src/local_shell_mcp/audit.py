@@ -28,6 +28,9 @@ _AUDIT_CALL_ID: ContextVar[str] = ContextVar("local_shell_mcp_audit_call_id", de
 _AUDIT_CALL_STATE: ContextVar[dict[str, Any] | None] = ContextVar(
     "local_shell_mcp_audit_call_state", default=None
 )
+_AUDIT_REQUEST_FIELDS: ContextVar[dict[str, Any] | None] = ContextVar(
+    "local_shell_mcp_audit_request_fields", default=None
+)
 _AUDIT_LOCK = threading.Lock()
 _AUDIT_PREVIEW_STRING_CHARS = 2_000
 _AUDIT_PREVIEW_ITEMS = 100
@@ -1148,10 +1151,31 @@ def audit_call_context(call_id: str) -> Iterator[dict[str, Any]]:
         _AUDIT_CALL_ID.reset(call_token)
 
 
+@contextmanager
+def audit_request_context(**fields: Any) -> Iterator[None]:
+    """Attach trusted ingress metadata to every nested audit event.
+
+    Container clients and future non-MCP ingress paths need correlation fields
+    on both their own lifecycle records and the tool implementation records they
+    trigger. Context variables preserve that metadata across awaited calls while
+    keeping concurrent requests isolated.
+    """
+
+    inherited = _AUDIT_REQUEST_FIELDS.get() or {}
+    token = _AUDIT_REQUEST_FIELDS.set({**inherited, **fields})
+    try:
+        yield
+    finally:
+        _AUDIT_REQUEST_FIELDS.reset(token)
+
+
 def audit(event: str, **fields: Any) -> None:
     if not _AUDIT_ENABLED.get():
         return
     settings = get_settings()
+    request_fields = _AUDIT_REQUEST_FIELDS.get()
+    if request_fields:
+        fields = {**request_fields, **fields}
     parent_call_id = _AUDIT_CALL_ID.get()
     if parent_call_id and "parent_call_id" not in fields:
         fields["parent_call_id"] = parent_call_id

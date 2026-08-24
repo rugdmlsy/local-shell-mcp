@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "local-shell-mcp"
-version = "4.2.0"
+version = "4.2.0+morrow.1"
 description = "A ChatGPT-compatible OAuth MCP server that gives AI coding agents controlled shell, filesystem, remote-worker, and Playwright access inside a local container."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -57,8 +57,8 @@ docs = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/fwerkor/local-shell-mcp"
-Repository = "https://github.com/fwerkor/local-shell-mcp"
+Homepage = "https://github.com/rugdmlsy/local-shell-mcp"
+Repository = "https://github.com/rugdmlsy/local-shell-mcp"
 
 [project.scripts]
 local-shell-mcp = "local_shell_mcp.main:main"

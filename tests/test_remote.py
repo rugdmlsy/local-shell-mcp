@@ -324,10 +324,10 @@ def test_worker_poll_request_timeout_uses_only_advertised_values():
 
 
 def test_worker_poll_payload_advertises_current_long_poll_budget():
-    assert remote._worker_poll_payload() == {  # noqa: SLF001
-        "protocol_version": remote.REMOTE_WORKER_POLL_PROTOCOL_VERSION,
-        "worker_version": remote.__version__,
-    }
+    payload = remote._worker_poll_payload()  # noqa: SLF001
+    assert payload["protocol_version"] == remote.REMOTE_WORKER_POLL_PROTOCOL_VERSION
+    assert payload["worker_version"] == remote.__version__
+    assert isinstance(payload["info"], dict)
     assert remote._worker_poll_payload(27)["poll_timeout_s"] == 17  # noqa: SLF001
 
 
@@ -526,11 +526,16 @@ async def test_remote_heartbeat_refreshes_worker_last_seen(monkeypatch):
     manager.tokens[worker.token] = worker.name
     monkeypatch.setattr(remote, "_utc", lambda: 123.0)
 
-    result = await manager.heartbeat(worker.token)
+    result = await manager.heartbeat(
+        worker.token,
+        {"info": {"cpu_percent": 12.5, "memory_percent": 34.0}},
+    )
 
     assert result == {"accepted": True, "name": "worker-a"}
     assert worker.last_seen == 123.0
     assert worker.status == "online"
+    assert worker.info["cpu_percent"] == 12.5
+    assert worker.info["memory_percent"] == 34.0
 
 
 @pytest.mark.asyncio
@@ -547,7 +552,8 @@ async def test_worker_job_sends_heartbeats_while_running(monkeypatch):
 
     def fake_post(url, payload, headers=None, timeout=None):
         posted_urls.append(url)
-        assert payload == {"job_id": "job-1"}
+        assert payload["job_id"] == "job-1"
+        assert isinstance(payload["info"], dict)
         assert headers == {"Authorization": "Bearer token"}
         assert timeout == 30
         loop.call_soon_threadsafe(heartbeat_seen.set)
