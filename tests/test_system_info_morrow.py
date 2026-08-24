@@ -31,9 +31,10 @@ def test_proc_parsers_cover_valid_and_invalid_inputs(monkeypatch):
     original_read_text = info.Path.read_text
 
     def read_text(path, *args, **kwargs):
-        if str(path) == "/proc/stat":
+        normalized = str(path).replace("\\", "/")
+        if normalized.endswith("/proc/stat"):
             return "cpu  1 2 3 4 5\n"
-        if str(path) == "/proc/meminfo":
+        if normalized.endswith("/proc/meminfo"):
             return "MemTotal: 100 kB\nMemAvailable: 40 kB\n"
         return original_read_text(path, *args, **kwargs)
 
@@ -89,7 +90,7 @@ def test_platform_memory_dispatch_and_cpu_sampling(monkeypatch):
 
     samples = iter([(100, 50), (200, 75)])
     monkeypatch.setattr(info, "_read_linux_cpu_times", lambda: next(samples))
-    monkeypatch.setattr(info.os, "getloadavg", lambda: (2.0, 0.0, 0.0))
+    monkeypatch.setattr(info.os, "getloadavg", lambda: (2.0, 0.0, 0.0), raising=False)
     monkeypatch.setattr(info.os, "cpu_count", lambda: 4)
     info._CPU_SAMPLE = None  # noqa: SLF001
     assert info._cpu_percent() == (50.0, 2.0)  # noqa: SLF001
@@ -171,7 +172,7 @@ def test_cpu_model_fallbacks_and_empty_gpu_probe(monkeypatch):
     original_read_text = info.Path.read_text
 
     def read_cpuinfo(path, *args, **kwargs):
-        if str(path) == "/proc/cpuinfo":
+        if str(path).replace("\\", "/").endswith("/proc/cpuinfo"):
             return "processor: 0\nmodel name: Example CPU\n"
         return original_read_text(path, *args, **kwargs)
 

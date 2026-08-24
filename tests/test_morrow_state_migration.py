@@ -58,7 +58,8 @@ def test_apply_splits_durable_and_legacy_state(tmp_path: Path) -> None:
     assert (destination / "legacy-v3" / "external-mcp.toml").is_file()
     assert not (destination / "tmp").exists()
     assert json.loads((destination / "migration-manifest.json").read_text())["mode"] == "apply"
-    assert (destination / "oauth-jwt-secret").stat().st_mode & 0o777 == 0o600
+    if sys.platform != "win32":
+        assert (destination / "oauth-jwt-secret").stat().st_mode & 0o777 == 0o600
 
 
 def test_refuses_nonempty_or_nested_destination(tmp_path: Path) -> None:

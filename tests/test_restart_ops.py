@@ -361,7 +361,7 @@ def test_low_level_run_unit_detection_and_status_errors(monkeypatch, tmp_path):
     original_read_text = restart.Path.read_text
 
     def cgroup(path, *args, **kwargs):
-        if str(path) == "/proc/self/cgroup":
+        if str(path).replace("\\", "/").endswith("/proc/self/cgroup"):
             return "0::/system.slice/local-shell-mcp.service\n"
         return original_read_text(path, *args, **kwargs)
 
