@@ -127,3 +127,29 @@ def test_remote_routes_replace_worker_bootstrap_endpoints():
     ]
     assert "/remote/register" in paths
     assert "/remote/resume" in paths
+
+
+def test_worker_runtime_imports_without_native_archive_codec(tmp_path):
+    script = """
+import builtins
+
+original_import = builtins.__import__
+
+def without_zstandard(name, *args, **kwargs):
+    if name == "zstandard":
+        raise ModuleNotFoundError("No module named 'zstandard'")
+    return original_import(name, *args, **kwargs)
+
+builtins.__import__ = without_zstandard
+from local_shell_mcp import audit
+
+assert audit.zstd is None
+"""
+    completed = subprocess.run(
+        [sys.executable, "-c", script],
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+    )
+    assert completed.returncode == 0, completed.stderr

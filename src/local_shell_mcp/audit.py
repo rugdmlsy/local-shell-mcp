@@ -18,7 +18,13 @@ from contextvars import ContextVar
 from pathlib import Path
 from typing import Any
 
-import zstandard as zstd
+try:
+    import zstandard as zstd
+except ModuleNotFoundError:
+    # Remote workers intentionally use a Python-only bundle so it remains portable
+    # across platforms and Python ABIs. Audit records must still work there even
+    # when the controller-only native archive codec is unavailable.
+    zstd = None  # type: ignore[assignment]
 
 from .settings import get_settings
 from .state_store import get_state_store, state_lock
@@ -886,6 +892,8 @@ def _write_file_archive(
 ) -> dict[str, Any] | None:
     if not indexes:
         return None
+    if zstd is None:
+        raise RuntimeError("zstandard is required to create audit archives")
     start_ts, end_ts = _archive_time_bounds(parsed, indexes)
     key = _archive_key(start_ts, end_ts)
     path = _archive_file_path(log_path, key)
@@ -929,6 +937,8 @@ def _write_state_archive(
 ) -> dict[str, Any] | None:
     if not indexes:
         return None
+    if zstd is None:
+        raise RuntimeError("zstandard is required to create audit archives")
     start_ts, end_ts = _archive_time_bounds(parsed, indexes)
     key = _archive_key(start_ts, end_ts)
     destination = io.BytesIO()
@@ -1030,7 +1040,7 @@ def _enforce_audit_storage_limit(
         return _prune_payload_store(log_path)
 
     archived_indexes = _archived_source_indexes(parsed, selected)
-    if max_archive_bytes > 0 and archived_indexes:
+    if max_archive_bytes > 0 and archived_indexes and zstd is not None:
         try:
             archive = _write_file_archive(log_path, parsed, archived_indexes)
         except (OSError, zstd.ZstdError):
@@ -1074,7 +1084,7 @@ def _enforce_state_audit_storage_limit(
     archive_entries = _load_state_archive_index()
     if selected is not None:
         archived_indexes = _archived_source_indexes(parsed, selected)
-        if max_archive_bytes > 0 and archived_indexes:
+        if max_archive_bytes > 0 and archived_indexes and zstd is not None:
             archive = _write_state_archive(parsed, archived_indexes)
             if archive is not None:
                 archive_entries.append(archive)
