@@ -33,6 +33,9 @@ def test_deploy_command_keeps_release_and_rollback_guards() -> None:
         "--call-environment",
         "local-shell-mcp-cloudflared.service",
         "LSM_DEPLOY_UV_BIN",
+        "sudo -n systemctl --no-block restart",
+        "wait_for_release_process",
+        "/proc/${pid}/cmdline",
         "post-switch verification failed; rolling back",
     ):
         assert required in script

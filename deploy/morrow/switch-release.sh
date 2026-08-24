@@ -28,4 +28,4 @@ fi
 current_link="${deploy_root}/.current.${$}"
 ln -s "releases/${release_name}" "${current_link}"
 mv -Tf "${current_link}" "${deploy_root}/current"
-systemctl restart "${service_name}"
+sudo -n systemctl --no-block restart "${service_name}"

@@ -149,6 +149,7 @@ test "$(id -un)" = morrow
 command -v git >/dev/null || { echo "git is missing on the VPS" >&2; exit 1; }
 command -v curl >/dev/null || { echo "curl is missing on the VPS" >&2; exit 1; }
 test -x "${uv_bin}" || { echo "uv is missing at ${uv_bin}" >&2; exit 1; }
+sudo -n true
 systemctl is-active --quiet "${service_name}"
 systemctl is-active --quiet local-shell-mcp-cloudflared.service
 test -d "${deploy_root}/releases"
@@ -208,27 +209,75 @@ fi
 REMOTE
 )"
 
+service_pid() {
+  ssh "${ssh_host}" systemctl show "${service_name}" -p MainPID --value
+}
+
+wait_for_release_process() {
+  local release_name="$1"
+  local old_pid="$2"
+  local process_state
+
+  # A systemd restart can spend roughly TimeoutStopSec draining active MCP
+  # sessions. Poll fresh SSH connections until both the PID changes and the
+  # interpreter path proves that systemd launched the requested release.
+  for attempt in $(seq 1 40); do
+    if process_state="$(ssh -o ConnectTimeout=10 "${ssh_host}" bash -s -- \
+      "${deploy_root}" "${release_name}" "${service_name}" "${old_pid}" <<'REMOTE'
+set -u
+deploy_root="$1"
+release_name="$2"
+service_name="$3"
+old_pid="$4"
+pid="$(systemctl show "${service_name}" -p MainPID --value 2>/dev/null || true)"
+test -n "${pid}" && test "${pid}" != 0 && test "${pid}" != "${old_pid}" || exit 1
+systemctl is-active --quiet "${service_name}" || exit 1
+test -r "/proc/${pid}/cmdline" || exit 1
+tr '\0' '\n' < "/proc/${pid}/cmdline" \
+  | grep -Fxq "${deploy_root}/releases/${release_name}/.venv/bin/python" \
+  || exit 1
+printf '%s' "${pid}"
+REMOTE
+    )"; then
+      echo "service process: ${process_state} (${release_name})"
+      return 0
+    fi
+    test "${attempt}" -lt 40 || break
+    sleep 2
+  done
+
+  echo "service did not start from ${release_name}" >&2
+  return 1
+}
+
 switched=false
 rollback_on_failure() {
   status="$?"
   trap - EXIT
   if test "${status}" -ne 0 && ${switched}; then
     echo "post-switch verification failed; rolling back" >&2
-    ssh "${ssh_host}" bash -s -- "${deploy_root}" "${service_name}" \
-      < "${script_dir}/rollback-release.sh" || true
+    rollback_pid="$(service_pid 2>/dev/null || true)"
+    if ssh "${ssh_host}" bash -s -- "${deploy_root}" "${service_name}" \
+      < "${script_dir}/rollback-release.sh"; then
+      rollback_release="$(ssh "${ssh_host}" basename \
+        "$(ssh "${ssh_host}" readlink -f "${deploy_root}/current")")"
+      wait_for_release_process "${rollback_release}" "${rollback_pid}" || true
+    fi
   fi
   exit "${status}"
 }
 trap rollback_on_failure EXIT
 
+old_pid="$(service_pid)"
 if test "${current_release}" = "${release_name}"; then
   echo "release is already current; restarting ${service_name} without changing previous"
-  ssh "${ssh_host}" systemctl restart "${service_name}"
+  ssh "${ssh_host}" sudo -n systemctl --no-block restart "${service_name}"
 else
   ssh "${ssh_host}" bash -s -- "${release_name}" "${deploy_root}" "${service_name}" \
     < "${script_dir}/switch-release.sh"
   switched=true
 fi
+wait_for_release_process "${release_name}" "${old_pid}"
 
 ssh "${ssh_host}" bash -s -- \
   "${deploy_root}" "${release_name}" "${service_name}" "${version}" <<'REMOTE'
