@@ -72,10 +72,11 @@ async def list_tools(mcp_url: str, token: str | None = None) -> list[str]:
         return [tool.name for tool in tools.tools]
 
 
-async def call_environment_get(mcp_url: str, token: str) -> bool:
+async def call_environment_get(mcp_url: str, token: str | None = None) -> bool:
+    headers = {"Authorization": f"Bearer {token}"} if token else None
     async with streamablehttp_client(
         mcp_url,
-        headers={"Authorization": f"Bearer {token}"},
+        headers=headers,
         timeout=20,
         sse_read_timeout=20,
     ) as (read, write, _), ClientSession(read, write) as session:
@@ -91,6 +92,11 @@ async def main() -> None:
     parser = argparse.ArgumentParser(description="Probe a local-shell-mcp remote endpoint.")
     parser.add_argument("base_url", help="Public base URL, for example https://mcp.example.com")
     parser.add_argument("--pin", help="OAuth admin PIN. If set, also tests an authenticated tool call.")
+    parser.add_argument(
+        "--call-environment",
+        action="store_true",
+        help="Call environment_get after discovery; useful for localhost auth-bypass deployment checks.",
+    )
     args = parser.parse_args()
 
     base_url = args.base_url.rstrip("/")
@@ -102,21 +108,19 @@ async def main() -> None:
             print(f"{path}: {response.status_code}")
             response.raise_for_status()
 
-    if args.pin:
-        token = await oauth_token(base_url, args.pin)
-        tools = await list_tools(mcp_url, token)
-        print(f"authenticated initialize/list_tools: ok ({len(tools)} tools)")
-        print("first tools:", ", ".join(tools[:8]))
+    token = await oauth_token(base_url, args.pin) if args.pin else None
+    tools = await list_tools(mcp_url, token)
+    authentication = "authenticated" if token else "unauthenticated"
+    print(f"{authentication} initialize/list_tools: ok ({len(tools)} tools)")
+    print("first tools:", ", ".join(tools[:8]))
+
+    if args.pin or args.call_environment:
         if "environment_get" not in tools:
             raise RuntimeError("environment_get is missing from the advertised MCP tool surface")
         ok = await call_environment_get(mcp_url, token)
-        print(f"authenticated environment_get call: {'ok' if ok else 'failed'}")
+        print(f"{authentication} environment_get call: {'ok' if ok else 'failed'}")
         if not ok:
-            raise RuntimeError("authenticated environment_get call failed")
-    else:
-        tools = await list_tools(mcp_url)
-        print(f"unauthenticated initialize/list_tools: ok ({len(tools)} tools)")
-        print("first tools:", ", ".join(tools[:8]))
+            raise RuntimeError(f"{authentication} environment_get call failed")
 
 
 if __name__ == "__main__":

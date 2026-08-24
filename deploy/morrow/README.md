@@ -16,6 +16,29 @@ The first v4.2 rollout deliberately uses a new
 `/home/morrow/.config/local-shell-mcp/state-v4.2` directory. The existing v3
 state and launcher remain untouched for the rollback drill.
 
+## One-command deployment from the Mac
+
+For routine releases, commit and push a clean `morrow/v4.2` checkout, increment
+the `4.2.0+morrow.N` version, then run:
+
+```bash
+./deploy/morrow/deploy-vps.sh --dry-run
+./deploy/morrow/deploy-vps.sh
+```
+
+The command derives `morrow-v4.2.0-N` from `pyproject.toml`, creates and pushes
+that tag when needed, builds the immutable VPS release, verifies its manifest
+and icon, switches `current`, and performs local plus public health checks. Its
+localhost MCP probe performs a real `environment_get` call, proving that local
+execution remains enabled. A failed post-switch check automatically invokes
+`rollback-release.sh`. Re-running the same release restarts it without replacing
+the `previous` rollback link.
+
+The defaults use the existing `ovh-vps` SSH alias and production paths. Override
+them only when deliberately targeting a different environment with
+`LSM_DEPLOY_SSH_HOST`, `LSM_DEPLOY_ROOT`, `LSM_DEPLOY_SERVICE`,
+`LSM_DEPLOY_PUBLIC_BASE_URL`, or `LSM_DEPLOY_EXPECTED_HOSTNAME`.
+
 ## Build a pinned release
 
 Run `build-release.sh morrow-v4.2.0-4 <full-commit-sha>` as `morrow` on the VPS.
