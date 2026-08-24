@@ -2,16 +2,28 @@
 set -euo pipefail
 
 usage() {
-  echo "usage: $0 <tag> <expected-full-sha> [repository-url] [deploy-root]" >&2
+  echo "usage: $0 <tag> <expected-full-sha> [repository-url] [deploy-root] [uv-bin]" >&2
   exit 64
 }
 
-test "$#" -ge 2 && test "$#" -le 4 || usage
+test "$#" -ge 2 && test "$#" -le 5 || usage
 
 readonly tag="$1"
 readonly expected_sha="$2"
 readonly repository_url="${3:-https://github.com/rugdmlsy/local-shell-mcp.git}"
 readonly deploy_root="${4:-/home/morrow/lsm-controller}"
+uv_bin="${5:-}"
+if test -z "${uv_bin}"; then
+  uv_bin="$(command -v uv 2>/dev/null || true)"
+fi
+if test -z "${uv_bin}" && test -x "${deploy_root}/tools/uv-0.11.25/bin/uv"; then
+  uv_bin="${deploy_root}/tools/uv-0.11.25/bin/uv"
+fi
+readonly uv_bin
+test -x "${uv_bin}" || {
+  echo "uv executable is missing; pass its absolute path as the fifth argument" >&2
+  exit 1
+}
 
 [[ "${tag}" =~ ^[0-9A-Za-z][0-9A-Za-z._-]*$ ]] || {
   echo "invalid tag: ${tag}" >&2
@@ -66,8 +78,8 @@ stage_dir=""
 
 (
   cd "${release_dir}"
-  uv lock --check
-  uv sync --frozen
+  "${uv_bin}" lock --check
+  "${uv_bin}" sync --frozen
   .venv/bin/local-shell-mcp --version
   .venv/bin/python - "${tag}" "${expected_sha}" > release-manifest.json <<'PY'
 import hashlib

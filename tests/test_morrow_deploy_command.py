@@ -32,6 +32,7 @@ def test_deploy_command_keeps_release_and_rollback_guards() -> None:
         "probe-mcp.py",
         "--call-environment",
         "local-shell-mcp-cloudflared.service",
+        "LSM_DEPLOY_UV_BIN",
         "post-switch verification failed; rolling back",
     ):
         assert required in script

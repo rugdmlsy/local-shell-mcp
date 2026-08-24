@@ -37,7 +37,8 @@ the `previous` rollback link.
 The defaults use the existing `ovh-vps` SSH alias and production paths. Override
 them only when deliberately targeting a different environment with
 `LSM_DEPLOY_SSH_HOST`, `LSM_DEPLOY_ROOT`, `LSM_DEPLOY_SERVICE`,
-`LSM_DEPLOY_PUBLIC_BASE_URL`, or `LSM_DEPLOY_EXPECTED_HOSTNAME`.
+`LSM_DEPLOY_PUBLIC_BASE_URL`, `LSM_DEPLOY_EXPECTED_HOSTNAME`, or
+`LSM_DEPLOY_UV_BIN`.
 
 ## Build a pinned release
 

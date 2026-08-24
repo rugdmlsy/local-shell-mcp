@@ -18,6 +18,7 @@ readonly service_name="${LSM_DEPLOY_SERVICE:-local-shell-mcp.service}"
 readonly public_base_url="${LSM_DEPLOY_PUBLIC_BASE_URL:-https://mcp.xycdev.com}"
 readonly expected_hostname="${LSM_DEPLOY_EXPECTED_HOSTNAME:-vps-96468177}"
 readonly repository_url="${LSM_DEPLOY_REPOSITORY_URL:-https://github.com/rugdmlsy/local-shell-mcp.git}"
+readonly uv_bin="${LSM_DEPLOY_UV_BIN:-${deploy_root}/tools/uv-0.11.25/bin/uv}"
 
 dry_run=false
 case "${1:-}" in
@@ -59,6 +60,10 @@ test "$#" -le 1 || {
 }
 [[ "${repository_url}" =~ ^https://[0-9A-Za-z._/-]+$ ]] || {
   echo "invalid repository URL: ${repository_url}" >&2
+  exit 64
+}
+[[ "${uv_bin}" =~ ^/[0-9A-Za-z._/-]+$ ]] || {
+  echo "invalid uv path: ${uv_bin}" >&2
   exit 64
 }
 
@@ -132,21 +137,24 @@ else
   git push origin "refs/tags/${release_tag}"
 fi
 
-ssh "${ssh_host}" bash -s -- "${expected_hostname}" "${deploy_root}" "${service_name}" <<'REMOTE'
+ssh "${ssh_host}" bash -s -- \
+  "${expected_hostname}" "${deploy_root}" "${service_name}" "${uv_bin}" <<'REMOTE'
 set -euo pipefail
 expected_hostname="$1"
 deploy_root="$2"
 service_name="$3"
+uv_bin="$4"
 test "$(hostname)" = "${expected_hostname}"
 test "$(id -un)" = morrow
-command -v git >/dev/null
-command -v uv >/dev/null
-command -v curl >/dev/null
+command -v git >/dev/null || { echo "git is missing on the VPS" >&2; exit 1; }
+command -v curl >/dev/null || { echo "curl is missing on the VPS" >&2; exit 1; }
+test -x "${uv_bin}" || { echo "uv is missing at ${uv_bin}" >&2; exit 1; }
 systemctl is-active --quiet "${service_name}"
 systemctl is-active --quiet local-shell-mcp-cloudflared.service
 test -d "${deploy_root}/releases"
 test "$(df -Pk "${deploy_root}" | awk 'NR == 2 {print $4}')" -gt 1048576
 echo "remote host: $(hostname)"
+echo "uv: $("${uv_bin}" --version)"
 echo "current release: $(readlink -f "${deploy_root}/current" 2>/dev/null || echo legacy)"
 REMOTE
 
@@ -160,7 +168,7 @@ if ${dry_run}; then
 fi
 
 ssh "${ssh_host}" bash -s -- \
-  "${release_tag}" "${commit_sha}" "${repository_url}" "${deploy_root}" \
+  "${release_tag}" "${commit_sha}" "${repository_url}" "${deploy_root}" "${uv_bin}" \
   < "${script_dir}/build-release.sh"
 
 ssh "${ssh_host}" bash -s -- \
