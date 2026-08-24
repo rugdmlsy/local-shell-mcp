@@ -1,0 +1,8 @@
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Bundled WebUI is generated from scanned ui source"
+paths = [
+  '''^src/local_shell_mcp/ui_static/web\.js$''',
+]

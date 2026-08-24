@@ -152,7 +152,9 @@ def migrate(source: Path, destination: Path, *, apply: bool, legacy_config: Path
         manifest_path = destination / "migration-manifest.json"
         manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         manifest_path.chmod(0o600)
-        os.sync()
+        sync = getattr(os, "sync", None)
+        if sync is not None:
+            sync()
     return manifest
 
 

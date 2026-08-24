@@ -29,6 +29,17 @@ MAX_RESTARTS_PER_WINDOW = 3
 ACTIVE_RESTART_STALE_S = 180
 
 
+def _user_id() -> int:
+    """Return the POSIX user id used in launchd targets.
+
+    Launchd paths are only exercised on macOS in production, but keeping this
+    helper portable lets the scheduling logic and plist safety checks run on
+    every CI platform.
+    """
+    getuid = getattr(os, "getuid", None)
+    return int(getuid()) if getuid is not None else 0
+
+
 def _state_root(role: RestartRole) -> Path:
     if role == "worker":
         from .remote_worker_state import worker_state_dir
@@ -141,7 +152,7 @@ def _target(role: RestartRole) -> tuple[str, str, str]:
         if kind == "systemd":
             return "systemd", "user", "local-shell-mcp-worker.service"
         if kind == "launchd":
-            return "launchd", "user", f"gui/{os.getuid()}/com.fwerkor.local-shell-mcp-worker"
+            return "launchd", "user", f"gui/{_user_id()}/com.fwerkor.local-shell-mcp-worker"
         raise RuntimeError("restart requires the worker to be managed by systemd or launchd")
     if system == "Linux":
         unit = _current_systemd_unit()
@@ -152,7 +163,7 @@ def _target(role: RestartRole) -> tuple[str, str, str]:
         label = os.getenv("XPC_SERVICE_NAME", "").strip()
         if not label:
             raise RuntimeError("controller is not running in a launchd service")
-        return "launchd", "user", f"gui/{os.getuid()}/{label}"
+        return "launchd", "user", f"gui/{_user_id()}/{label}"
     raise RuntimeError("restart currently supports systemd and launchd managed LSM processes")
 
 
@@ -273,7 +284,7 @@ def _schedule_launchd(
     }
     with plist_path.open("wb") as handle:
         plistlib.dump(payload, handle)
-    domain = f"gui/{os.getuid()}"
+    domain = f"gui/{_user_id()}"
     try:
         _run(["launchctl", "bootstrap", domain, str(plist_path)])
     except Exception:
@@ -401,7 +412,7 @@ def _cleanup_launchd_supervisor(label: str | None, plist_path: str | None) -> No
     if not label:
         return
     subprocess.Popen(  # noqa: S603
-        ["launchctl", "bootout", f"gui/{os.getuid()}/{label}"],
+        ["launchctl", "bootout", f"gui/{_user_id()}/{label}"],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         start_new_session=True,

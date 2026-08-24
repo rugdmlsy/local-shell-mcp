@@ -18,7 +18,7 @@ state and launcher remain untouched for the rollback drill.
 
 ## Build a pinned release
 
-Run `build-release.sh morrow-v4.2.0-1 <full-commit-sha>` as `morrow` on the VPS.
+Run `build-release.sh morrow-v4.2.0-2 <full-commit-sha>` as `morrow` on the VPS.
 The script fetches that exact public tag, verifies the commit, runs
 `uv lock --check` and `uv sync --frozen`, writes `release-manifest.json`, and
 only then updates `candidate`. It does not touch `current` or restart production.

@@ -5,12 +5,14 @@ import json
 import os
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import jwt
 import pytest
 from starlette.exceptions import HTTPException
 from starlette.requests import Request
 
+import local_shell_mcp.container_client as container_client
 import local_shell_mcp.human_ui as human_ui
 from local_shell_mcp.auth import Principal, _is_public_path
 from local_shell_mcp.container_client import (
@@ -167,6 +169,33 @@ def _ui_request(method: str, *, path_params: dict[str, str] | None = None) -> Re
     )
 
 
+def _client_request(
+    body: bytes,
+    *,
+    path: str,
+    app: object | None = None,
+) -> Request:
+    async def receive():  # noqa: ANN202
+        return {"type": "http.request", "body": body, "more_body": False}
+
+    return Request(
+        {
+            "type": "http",
+            "http_version": "1.1",
+            "method": "POST",
+            "scheme": "http",
+            "path": path,
+            "raw_path": path.encode(),
+            "query_string": b"",
+            "headers": [(b"host", b"testserver")],
+            "client": ("127.0.0.1", 1),
+            "server": ("testserver", 80),
+            "app": app or SimpleNamespace(state=SimpleNamespace()),
+        },
+        receive,
+    )
+
+
 @pytest.mark.asyncio
 async def test_authenticated_ui_can_create_list_and_revoke_container_clients(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -193,3 +222,218 @@ async def test_authenticated_ui_can_create_list_and_revoke_container_clients(
     )
     revoked = json.loads(revoked_response.body)["data"]
     assert revoked["active"] is False
+
+
+@pytest.mark.asyncio
+async def test_registration_route_validates_and_returns_private_curl_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _configure(tmp_path, monkeypatch)
+    manager = ContainerClientManager()
+    monkeypatch.setattr(container_client, "container_client_manager", lambda: manager)
+
+    invalid_json = await container_client.client_register(
+        _client_request(b"{", path="/client/v1/register")
+    )
+    assert invalid_json.status_code == 400
+    unknown = await container_client.client_register(
+        _client_request(b'{"invite":"x","extra":true}', path="/client/v1/register")
+    )
+    assert unknown.status_code == 422
+    invalid_invite = await container_client.client_register(
+        _client_request(b'{"invite":"x"}', path="/client/v1/register")
+    )
+    assert invalid_invite.status_code == 422
+    invalid_version = await container_client.client_register(
+        _client_request(
+            b'{"invite":"lsmcp_cli_inv_unused","client_version":1}',
+            path="/client/v1/register",
+        )
+    )
+    assert invalid_version.status_code == 422
+
+    invitation = await manager.create_invite(base_url="http://testserver")
+    response = await container_client.client_register(
+        _client_request(
+            json.dumps({"invite": invitation["invite"], "client_version": "1.2.3"}).encode(),
+            path="/client/v1/register",
+        )
+    )
+    assert response.status_code == 200
+    config = response.body.decode()
+    assert 'url = "http://testserver/client/v1/call"' in config
+    assert 'Authorization: Bearer ' in config
+    assert response.headers["cache-control"] == "no-store"
+
+
+@pytest.mark.asyncio
+async def test_client_call_reserved_and_real_tool_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _configure(tmp_path, monkeypatch)
+    manager = ContainerClientManager()
+    invitation = await manager.create_invite(base_url="http://testserver")
+    session, token = await manager.register(
+        invitation["invite"], base_url="http://testserver", client_version="1.2.3"
+    )
+    claims = jwt.decode(token, options={"verify_signature": False})
+    principal = Principal(email=None, subject=claims["sub"], claims=claims)
+    monkeypatch.setattr(container_client, "container_client_manager", lambda: manager)
+    monkeypatch.setattr(container_client, "current_principal", lambda: principal)
+
+    class FakeMcp:
+        def __init__(self):
+            tool = SimpleNamespace(description="Echo", parameters={"type": "object"}, annotations=None)
+            self._tool_manager = SimpleNamespace(_tools={"echo": tool, "broken": tool})
+
+        async def call_tool(self, name, arguments):  # noqa: ANN001, ANN202
+            if name == "broken":
+                raise RuntimeError("boom")
+            return ([{"type": "text", "text": json.dumps({"ok": True})}], arguments)
+
+    app = SimpleNamespace(state=SimpleNamespace(container_client_mcp=FakeMcp()))
+
+    async def call(payload):  # noqa: ANN001, ANN202
+        body = payload if isinstance(payload, bytes) else json.dumps(payload).encode()
+        response = await container_client.client_call(
+            _client_request(body, path="/client/v1/call", app=app)
+        )
+        return response.status_code, json.loads(response.body)
+
+    status, payload = await call({"tool": "lsm.session_info", "arguments": {}})
+    assert status == 200
+    assert payload["structured_content"]["client_id"] == session.session_id
+    status, payload = await call({"tool": "lsm.tools_list", "arguments": {}})
+    assert status == 200
+    assert [tool["name"] for tool in payload["structured_content"]["tools"]] == [
+        "broken",
+        "echo",
+    ]
+    assert (await call({"tool": "missing", "arguments": {}}))[0] == 404
+    assert (await call({"tool": "lsm.tools_list", "arguments": {"bad": True}}))[0] == 422
+    assert (await call({"tool": "lsm.session_info", "arguments": {"bad": True}}))[0] == 422
+    assert (await call({"tool": "echo", "arguments": {"value": 1}}))[1]["ok"] is True
+    broken = (await call({"tool": "broken", "arguments": {}}))[1]
+    assert broken["ok"] is False
+    assert broken["structured_content"]["message"] == "boom"
+    assert (await call(b"{"))[0] == 400
+    assert (await call({"tool": "echo"}))[0] == 422
+    assert manager._active_calls == {}  # noqa: SLF001
+
+
+def test_client_helpers_and_session_limits(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _configure(tmp_path, monkeypatch)
+    assert container_client._validate_call_envelope(  # noqa: SLF001
+        {"tool": "echo", "arguments": {}}
+    ) == ("echo", {})
+    for invalid in (None, {"tool": "", "arguments": {}}, {"tool": "echo", "arguments": []}):
+        with pytest.raises(HTTPException):
+            container_client._validate_call_envelope(invalid)  # noqa: SLF001
+
+    assert container_client._content_dict("text") == {"type": "text", "text": "text"}  # noqa: SLF001
+    assert container_client._content_dict({"type": "image"}) == {"type": "image"}  # noqa: SLF001
+    assert container_client._tool_is_error(  # noqa: SLF001
+        {}, [{"type": "text", "text": '{"ok":false}'}]
+    )
+    assert not container_client._tool_is_error({}, [{"type": "text", "text": "not-json"}])  # noqa: SLF001
+
+    manager = ContainerClientManager()
+    with pytest.raises(HTTPException, match="required"):
+        manager.begin_call(None)
+    with pytest.raises(KeyError):
+        manager.revoke("missing")
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_handlers_and_registration_failures(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _configure(tmp_path, monkeypatch)
+    request = _client_request(b"{}", path="/client/install.sh")
+    install = await container_client.client_install(request)
+    manifest = await container_client.client_manifest(request)
+    download = await container_client.client_download(request)
+    assert b"install.sh --invite INVITE" in install.body
+    manifest_payload = json.loads(manifest.body)
+    assert manifest_payload["download_url"] == "http://testserver/client/v1/lsm"
+    assert len(manifest_payload["sha256"]) == 64
+    assert download.body == container_client.CLIENT_SCRIPT.encode()
+
+    class FailingManager:
+        async def register(self, *args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+            raise ValueError("invite code has expired")
+
+    monkeypatch.setattr(container_client, "container_client_manager", FailingManager)
+    expired = await container_client.client_register(
+        _client_request(
+            b'{"invite":"lsmcp_cli_inv_expired"}', path="/client/v1/register"
+        )
+    )
+    assert expired.status_code == 410
+
+    async def at_capacity(*args, **kwargs):  # noqa: ANN002, ANN003
+        raise RuntimeError("session limit")
+
+    monkeypatch.setattr(
+        container_client,
+        "container_client_manager",
+        lambda: SimpleNamespace(register=at_capacity),
+    )
+    limited = await container_client.client_register(
+        _client_request(b'{"invite":"lsmcp_cli_inv_full"}', path="/client/v1/register")
+    )
+    assert limited.status_code == 429
+
+
+@pytest.mark.asyncio
+async def test_manager_rejects_invalid_principals_and_concurrent_calls(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _configure(tmp_path, monkeypatch)
+    monkeypatch.setenv("LOCAL_SHELL_MCP_CONTAINER_CLIENT_MAX_CONCURRENT_CALLS", "1")
+    get_settings.cache_clear()
+    manager = ContainerClientManager()
+    invitation = await manager.create_invite(base_url="http://testserver")
+    session, token = await manager.register(
+        invitation["invite"], base_url="http://testserver", client_version="1"
+    )
+    claims = jwt.decode(token, options={"verify_signature": False})
+    wrong_kind = Principal(email=None, subject="x", claims={"token_kind": "oauth"})
+    with pytest.raises(HTTPException, match="required"):
+        manager.begin_call(wrong_kind)
+    bad_claims = dict(claims, jti="wrong")
+    with pytest.raises(HTTPException, match="not active"):
+        manager.begin_call(Principal(email=None, subject=claims["sub"], claims=bad_claims))
+
+    principal = Principal(email=None, subject=claims["sub"], claims=claims)
+    manager.begin_call(principal)
+    with pytest.raises(HTTPException, match="concurrent"):
+        manager.begin_call(principal)
+    manager.end_call(session.session_id)
+
+
+def test_registry_recovers_from_backup_and_ignores_malformed_rows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _configure(tmp_path, monkeypatch)
+    state = tmp_path / "state"
+    state.mkdir()
+    (state / "container-clients.json").write_text("bad", encoding="utf-8")
+    (state / "container-clients.json.bak").write_text(
+        json.dumps(
+            {
+                "sessions": [
+                    {"bad": True},
+                    {
+                        "session_id": "ccs_valid",
+                        "jti": "jti",
+                        "created_at": 1,
+                        "expires_at": int(time.time()) + 100,
+                    },
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    manager = ContainerClientManager(state)
+    assert list(manager.sessions) == ["ccs_valid"]
