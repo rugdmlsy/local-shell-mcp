@@ -234,7 +234,7 @@ service_pid() {
 }
 
 wait_for_release_process() {
-  local release_name="$1"
+  local target_release_name="$1"
   local old_pid="$2"
   local process_state
 
@@ -243,7 +243,7 @@ wait_for_release_process() {
   # interpreter path proves that systemd launched the requested release.
   for attempt in $(seq 1 40); do
     if process_state="$(remote bash -s -- \
-      "${deploy_root}" "${release_name}" "${service_name}" "${old_pid}" <<'REMOTE'
+      "${deploy_root}" "${target_release_name}" "${service_name}" "${old_pid}" <<'REMOTE'
 set -u
 deploy_root="$1"
 release_name="$2"
@@ -259,14 +259,14 @@ tr '\0' '\n' < "/proc/${pid}/cmdline" \
 printf '%s' "${pid}"
 REMOTE
     )"; then
-      echo "service process: ${process_state} (${release_name})"
+      echo "service process: ${process_state} (${target_release_name})"
       return 0
     fi
     test "${attempt}" -lt 40 || break
     sleep 2
   done
 
-  echo "service did not start from ${release_name}" >&2
+  echo "service did not start from ${target_release_name}" >&2
   return 1
 }
 

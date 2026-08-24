@@ -41,3 +41,5 @@ def test_deploy_command_keeps_release_and_rollback_guards() -> None:
         "post-switch verification failed; rolling back",
     ):
         assert required in script
+
+    assert 'local release_name="$1"' not in script
