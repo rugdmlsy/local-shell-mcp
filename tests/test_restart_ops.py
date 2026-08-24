@@ -404,3 +404,40 @@ def test_launchd_manager_actions(monkeypatch):
     restart._restart_target("launchd", "user", "gui/1/lsm")  # noqa: SLF001
     assert calls[-1][0] == ["launchctl", "kickstart", "-k", "gui/1/lsm"]
     assert restart._manager_pid("launchd", "user", "gui/1/lsm") is None  # noqa: SLF001
+
+
+def test_controller_launcher_and_remaining_discovery_branches(monkeypatch, tmp_path):
+    _configure(tmp_path, monkeypatch)
+    executable = tmp_path / "local-shell-mcp"
+    executable.write_text("", encoding="utf-8")
+    monkeypatch.setattr(restart.sys, "argv", [str(executable)])
+    assert restart._launcher("controller") == [str(executable.resolve())]  # noqa: SLF001
+
+    monkeypatch.setattr(restart.sys, "argv", ["pytest"])
+    monkeypatch.setattr(restart.sys, "frozen", True, raising=False)
+    assert restart._launcher("controller") == [restart.sys.executable]  # noqa: SLF001
+    monkeypatch.setattr(restart.sys, "frozen", False)
+    assert restart._launcher("controller")[-2:] == ["-m", "local_shell_mcp.main"]  # noqa: SLF001
+
+    monkeypatch.setattr(restart.Path, "read_text", lambda *args, **kwargs: "0::/user.slice\n")
+    assert restart._current_systemd_unit() is None  # noqa: SLF001
+    monkeypatch.setattr(restart.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(restart, "_current_systemd_unit", lambda: None)
+    with pytest.raises(RuntimeError, match="systemd"):
+        restart._target("controller")  # noqa: SLF001
+    monkeypatch.setattr(restart, "_load_records", lambda role: [])
+    assert restart.restart_status("controller") == {"role": "controller", "status": "none"}
+
+
+def test_systemd_scope_user_and_missing_unit(monkeypatch):
+    monkeypatch.setattr(restart.shutil, "which", lambda name: "/usr/bin/systemctl")
+    monkeypatch.setattr(
+        restart,
+        "_run",
+        lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout="", stderr=""),
+    )
+    assert restart._systemd_scope("lsm.service") == "user"  # noqa: SLF001
+    monkeypatch.setattr(restart.shutil, "which", lambda name: None)
+    with pytest.raises(RuntimeError, match="unable to find"):
+        restart._systemd_scope("missing.service")  # noqa: SLF001
+    restart._cleanup_launchd_supervisor(None, None)  # noqa: SLF001

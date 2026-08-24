@@ -437,3 +437,27 @@ def test_registry_recovers_from_backup_and_ignores_malformed_rows(
     )
     manager = ContainerClientManager(state)
     assert list(manager.sessions) == ["ccs_valid"]
+
+
+def test_manager_singleton_tracks_configured_state_and_call_requires_auth(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _configure(tmp_path, monkeypatch)
+    first = container_client.container_client_manager()
+    assert container_client.container_client_manager() is first
+    monkeypatch.setenv("LOCAL_SHELL_MCP_STATE_DIR", str(tmp_path / "other-state"))
+    get_settings.cache_clear()
+    assert container_client.container_client_manager() is not first
+
+
+@pytest.mark.asyncio
+async def test_client_call_rejects_missing_container_principal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _configure(tmp_path, monkeypatch)
+    monkeypatch.setattr(container_client, "current_principal", lambda: None)
+    response = await container_client.client_call(
+        _client_request(b'{"tool":"lsm.session_info","arguments":{}}', path="/client/v1/call")
+    )
+    assert response.status_code == 403
+    assert json.loads(response.body)["error"] == "client_auth_failed"
