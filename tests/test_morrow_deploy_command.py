@@ -36,6 +36,8 @@ def test_deploy_command_keeps_release_and_rollback_guards() -> None:
         "sudo -n systemctl --no-block restart",
         "wait_for_release_process",
         "/proc/${pid}/cmdline",
+        "ControlMaster=auto",
+        "cleanup_ssh",
         "post-switch verification failed; rolling back",
     ):
         assert required in script

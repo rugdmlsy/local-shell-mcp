@@ -34,7 +34,9 @@ execution remains enabled. A failed post-switch check automatically invokes
 `rollback-release.sh`. Re-running the same release restarts it without replacing
 the `previous` rollback link. Service restarts are queued with non-interactive
 `sudo`; the command waits for a changed systemd PID whose interpreter belongs to
-the target release before it accepts the deployment.
+the target release before it accepts the deployment. It also reuses one SSH
+ControlMaster connection for the whole transaction so VPS connection throttling
+cannot strand a verified candidate before cutover.
 
 The defaults use the existing `ovh-vps` SSH alias and production paths. Override
 them only when deliberately targeting a different environment with

@@ -67,6 +67,26 @@ test "$#" -le 1 || {
   exit 64
 }
 
+readonly ssh_control_dir="$(mktemp -d "${TMPDIR:-/tmp}/lsm-deploy.XXXXXX")"
+readonly ssh_control_path="${ssh_control_dir}/control"
+readonly -a ssh_options=(
+  -o ControlMaster=auto
+  -o ControlPersist=180
+  -o ControlPath="${ssh_control_path}"
+  -o ConnectTimeout=10
+  -o ConnectionAttempts=3
+)
+
+remote() {
+  ssh "${ssh_options[@]}" "${ssh_host}" "$@"
+}
+
+cleanup_ssh() {
+  ssh "${ssh_options[@]}" -O exit "${ssh_host}" >/dev/null 2>&1 || true
+  rmdir "${ssh_control_dir}" 2>/dev/null || true
+}
+trap cleanup_ssh EXIT
+
 cd "${repository_root}"
 test -z "$(git status --porcelain)" || {
   echo "working tree must be clean before deployment" >&2
@@ -137,7 +157,7 @@ else
   git push origin "refs/tags/${release_tag}"
 fi
 
-ssh "${ssh_host}" bash -s -- \
+remote bash -s -- \
   "${expected_hostname}" "${deploy_root}" "${service_name}" "${uv_bin}" <<'REMOTE'
 set -euo pipefail
 expected_hostname="$1"
@@ -168,11 +188,11 @@ if ${dry_run}; then
   exit 0
 fi
 
-ssh "${ssh_host}" bash -s -- \
+remote bash -s -- \
   "${release_tag}" "${commit_sha}" "${repository_url}" "${deploy_root}" "${uv_bin}" \
   < "${script_dir}/build-release.sh"
 
-ssh "${ssh_host}" bash -s -- \
+remote bash -s -- \
   "${deploy_root}" "${release_name}" "${commit_sha}" "${version}" \
   "${icon_bytes}" "${icon_sha256}" <<'REMOTE'
 set -euo pipefail
@@ -200,7 +220,7 @@ PY
 echo "candidate verified: ${release_dir}"
 REMOTE
 
-current_release="$(ssh "${ssh_host}" bash -s -- "${deploy_root}" <<'REMOTE'
+current_release="$(remote bash -s -- "${deploy_root}" <<'REMOTE'
 set -euo pipefail
 deploy_root="$1"
 if test -L "${deploy_root}/current"; then
@@ -210,7 +230,7 @@ REMOTE
 )"
 
 service_pid() {
-  ssh "${ssh_host}" systemctl show "${service_name}" -p MainPID --value
+  remote systemctl show "${service_name}" -p MainPID --value
 }
 
 wait_for_release_process() {
@@ -219,10 +239,10 @@ wait_for_release_process() {
   local process_state
 
   # A systemd restart can spend roughly TimeoutStopSec draining active MCP
-  # sessions. Poll fresh SSH connections until both the PID changes and the
+  # sessions. Poll fresh SSH channels until both the PID changes and the
   # interpreter path proves that systemd launched the requested release.
   for attempt in $(seq 1 40); do
-    if process_state="$(ssh -o ConnectTimeout=10 "${ssh_host}" bash -s -- \
+    if process_state="$(remote bash -s -- \
       "${deploy_root}" "${release_name}" "${service_name}" "${old_pid}" <<'REMOTE'
 set -u
 deploy_root="$1"
@@ -257,13 +277,16 @@ rollback_on_failure() {
   if test "${status}" -ne 0 && ${switched}; then
     echo "post-switch verification failed; rolling back" >&2
     rollback_pid="$(service_pid 2>/dev/null || true)"
-    if ssh "${ssh_host}" bash -s -- "${deploy_root}" "${service_name}" \
+    if remote bash -s -- "${deploy_root}" "${service_name}" \
       < "${script_dir}/rollback-release.sh"; then
-      rollback_release="$(ssh "${ssh_host}" basename \
-        "$(ssh "${ssh_host}" readlink -f "${deploy_root}/current")")"
+      rollback_release="$(remote bash -s -- "${deploy_root}" <<'REMOTE'
+basename "$(readlink -f "$1/current")"
+REMOTE
+)"
       wait_for_release_process "${rollback_release}" "${rollback_pid}" || true
     fi
   fi
+  cleanup_ssh
   exit "${status}"
 }
 trap rollback_on_failure EXIT
@@ -271,15 +294,15 @@ trap rollback_on_failure EXIT
 old_pid="$(service_pid)"
 if test "${current_release}" = "${release_name}"; then
   echo "release is already current; restarting ${service_name} without changing previous"
-  ssh "${ssh_host}" sudo -n systemctl --no-block restart "${service_name}"
+  remote sudo -n systemctl --no-block restart "${service_name}"
 else
-  ssh "${ssh_host}" bash -s -- "${release_name}" "${deploy_root}" "${service_name}" \
+  remote bash -s -- "${release_name}" "${deploy_root}" "${service_name}" \
     < "${script_dir}/switch-release.sh"
   switched=true
 fi
 wait_for_release_process "${release_name}" "${old_pid}"
 
-ssh "${ssh_host}" bash -s -- \
+remote bash -s -- \
   "${deploy_root}" "${release_name}" "${service_name}" "${version}" <<'REMOTE'
 set -euo pipefail
 deploy_root="$1"
@@ -306,6 +329,7 @@ REMOTE
 # a later Cloudflare or client-network failure into an automatic code rollback.
 switched=false
 trap - EXIT
+cleanup_ssh
 
 curl -fsS --retry 5 --retry-delay 1 --max-time 10 "${public_base_url}/healthz"
 echo
