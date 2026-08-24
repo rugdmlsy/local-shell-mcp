@@ -19,6 +19,7 @@ readonly public_base_url="${LSM_DEPLOY_PUBLIC_BASE_URL:-https://mcp.xycdev.com}"
 readonly expected_hostname="${LSM_DEPLOY_EXPECTED_HOSTNAME:-vps-96468177}"
 readonly repository_url="${LSM_DEPLOY_REPOSITORY_URL:-https://github.com/rugdmlsy/local-shell-mcp.git}"
 readonly uv_bin="${LSM_DEPLOY_UV_BIN:-${deploy_root}/tools/uv-0.11.25/bin/uv}"
+readonly service_env="${LSM_DEPLOY_SERVICE_ENV:-/home/morrow/.config/local-shell-mcp/service.env}"
 
 dry_run=false
 case "${1:-}" in
@@ -64,6 +65,10 @@ test "$#" -le 1 || {
 }
 [[ "${uv_bin}" =~ ^/[0-9A-Za-z._/-]+$ ]] || {
   echo "invalid uv path: ${uv_bin}" >&2
+  exit 64
+}
+[[ "${service_env}" =~ ^/[0-9A-Za-z._/-]+$ ]] || {
+  echo "invalid service environment path: ${service_env}" >&2
   exit 64
 }
 
@@ -158,17 +163,24 @@ else
 fi
 
 remote bash -s -- \
-  "${expected_hostname}" "${deploy_root}" "${service_name}" "${uv_bin}" <<'REMOTE'
+  "${expected_hostname}" "${deploy_root}" "${service_name}" "${uv_bin}" \
+  "${service_env}" <<'REMOTE'
 set -euo pipefail
 expected_hostname="$1"
 deploy_root="$2"
 service_name="$3"
 uv_bin="$4"
+service_env="$5"
 test "$(hostname)" = "${expected_hostname}"
 test "$(id -un)" = morrow
 command -v git >/dev/null || { echo "git is missing on the VPS" >&2; exit 1; }
 command -v curl >/dev/null || { echo "curl is missing on the VPS" >&2; exit 1; }
 test -x "${uv_bin}" || { echo "uv is missing at ${uv_bin}" >&2; exit 1; }
+test -r "${service_env}" || { echo "service environment is unreadable" >&2; exit 1; }
+grep -q '^LOCAL_SHELL_MCP_OAUTH_ADMIN_PIN=' "${service_env}" || {
+  echo "OAuth admin PIN is missing from the service environment" >&2
+  exit 1
+}
 sudo -n true
 systemctl is-active --quiet "${service_name}"
 systemctl is-active --quiet local-shell-mcp-cloudflared.service
@@ -303,12 +315,14 @@ fi
 wait_for_release_process "${release_name}" "${old_pid}"
 
 remote bash -s -- \
-  "${deploy_root}" "${release_name}" "${service_name}" "${version}" <<'REMOTE'
+  "${deploy_root}" "${release_name}" "${service_name}" "${version}" \
+  "${service_env}" <<'REMOTE'
 set -euo pipefail
 deploy_root="$1"
 release_name="$2"
 service_name="$3"
 version="$4"
+service_env="$5"
 for attempt in $(seq 1 30); do
   if curl -fsS --max-time 2 http://127.0.0.1:8765/healthz >/dev/null; then
     break
@@ -319,9 +333,13 @@ done
 systemctl is-active --quiet "${service_name}"
 test "$(basename "$(readlink -f "${deploy_root}/current")")" = "${release_name}"
 test "$("${deploy_root}/current/.venv/bin/local-shell-mcp" --version)" = "${version}"
+set -a
+. "${service_env}"
+set +a
 "${deploy_root}/current/.venv/bin/python" \
   "${deploy_root}/current/scripts/probe-mcp.py" \
-  http://127.0.0.1:8765 --call-environment
+  http://127.0.0.1:8765 \
+  --pin-env LOCAL_SHELL_MCP_OAUTH_ADMIN_PIN
 systemctl show "${service_name}" -p ActiveState -p SubState -p MainPID -p NRestarts --no-pager
 REMOTE
 

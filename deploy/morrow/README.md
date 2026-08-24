@@ -30,7 +30,9 @@ The command derives `morrow-v4.2.0-N` from `pyproject.toml`, creates and pushes
 that tag when needed, builds the immutable VPS release, verifies its manifest
 and icon, switches `current`, and performs local plus public health checks. Its
 localhost MCP probe performs a real `environment_get` call, proving that local
-execution remains enabled. A failed post-switch check automatically invokes
+execution remains enabled. The probe reads the OAuth admin PIN from the private
+service environment, exchanges it for an ephemeral token, and never places the
+PIN or token in the command line or logs. A failed post-switch check automatically invokes
 `rollback-release.sh`. Re-running the same release restarts it without replacing
 the `previous` rollback link. Service restarts are queued with non-interactive
 `sudo`; the command waits for a changed systemd PID whose interpreter belongs to
@@ -42,7 +44,8 @@ The defaults use the existing `ovh-vps` SSH alias and production paths. Override
 them only when deliberately targeting a different environment with
 `LSM_DEPLOY_SSH_HOST`, `LSM_DEPLOY_ROOT`, `LSM_DEPLOY_SERVICE`,
 `LSM_DEPLOY_PUBLIC_BASE_URL`, `LSM_DEPLOY_EXPECTED_HOSTNAME`, or
-`LSM_DEPLOY_UV_BIN`.
+`LSM_DEPLOY_UV_BIN`. `LSM_DEPLOY_SERVICE_ENV` can point to an equivalent private
+service environment when testing a separate deployment.
 
 ## Build a pinned release
 
