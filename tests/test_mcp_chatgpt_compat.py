@@ -1,9 +1,11 @@
 import base64
 import hashlib
 import json
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
+from PIL import Image
 from starlette.applications import Starlette
 from starlette.routing import Route
 
@@ -27,6 +29,23 @@ from local_shell_mcp.oauth import (
 )
 from local_shell_mcp.settings import get_settings
 from local_shell_mcp.tools import build_mcp
+
+
+def test_official_icon_assets_are_identical_and_under_ten_kib():
+    repository = Path(__file__).parents[1]
+    icon_paths = [
+        repository / "docs/assets/logo.png",
+        repository / "ui/static/logo.png",
+        repository / "src/local_shell_mcp/ui_static/logo.png",
+        repository / "vscode-extension/media/icon.png",
+    ]
+    payloads = [path.read_bytes() for path in icon_paths]
+
+    assert len(set(payloads)) == 1
+    assert len(payloads[0]) < 10 * 1024
+    with Image.open(icon_paths[0]) as icon:
+        assert icon.size == (84, 84)
+        assert icon.mode == "RGBA"
 
 
 def test_mcp_discovery_request_classification():
@@ -99,9 +118,11 @@ async def test_mcp_metadata_for_chatgpt_developer_mode(tmp_path, monkeypatch):
     assert initialization.website_url == "https://fwerkor.github.io/local-shell-mcp/"
     assert initialization.icons
     assert (
-        initialization.icons[0].src == "https://fwerkor.github.io/local-shell-mcp/assets/logo.svg"
+        initialization.icons[0].src
+        == "https://raw.githubusercontent.com/rugdmlsy/local-shell-mcp/refs/heads/morrow/v4.2/docs/assets/logo.png"
     )
-    assert initialization.icons[0].mimeType == "image/svg+xml"
+    assert initialization.icons[0].mimeType == "image/png"
+    assert initialization.icons[0].sizes == ["84x84"]
     instructions = mcp.instructions or ""
     assert "Never discover, infer, or auto-select a Session from other conversations" in instructions
     assert "clearly tell the user the active session_id" in instructions

@@ -550,9 +550,9 @@ def _authorize_template() -> Template:
 
 @lru_cache(maxsize=1)
 def _oauth_logo_data_uri() -> str:
-    logo = files("local_shell_mcp").joinpath("ui_static", "logo.svg").read_bytes()
+    logo = files("local_shell_mcp").joinpath("ui_static", "logo.png").read_bytes()
     encoded = base64.b64encode(logo).decode("ascii")
-    return f"data:image/svg+xml;base64,{encoded}"
+    return f"data:image/png;base64,{encoded}"
 
 
 _SCOPE_DETAILS = {

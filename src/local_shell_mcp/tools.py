@@ -3579,9 +3579,9 @@ def build_mcp() -> FastMCP:
         website_url="https://fwerkor.github.io/local-shell-mcp/",
         icons=[
             Icon(
-                src="https://fwerkor.github.io/local-shell-mcp/assets/logo.svg",
-                mimeType="image/svg+xml",
-                sizes=["any"],
+                src="https://raw.githubusercontent.com/rugdmlsy/local-shell-mcp/refs/heads/morrow/v4.2/docs/assets/logo.png",
+                mimeType="image/png",
+                sizes=["84x84"],
             )
         ],
         transport_security=_transport_security_settings(),

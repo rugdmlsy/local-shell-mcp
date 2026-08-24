@@ -641,8 +641,8 @@ plugins:
 theme:
   name: material
   language: en
-  logo: assets/logo.svg
-  favicon: assets/favicon.svg
+  logo: assets/logo.png
+  favicon: assets/logo.png
   features:
     - navigation.tracking
     - navigation.tabs

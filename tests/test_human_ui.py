@@ -294,7 +294,7 @@ def test_webui_index_versions_static_assets_for_cache_busting(tmp_path, monkeypa
 
     assert f"/ui/assets/web.css?v={__version__}" in html
     assert f"/ui/assets/web.js?v={__version__}" in html
-    assert f"/ui/assets/logo.svg?v={__version__}" in html
+    assert f"/ui/assets/logo.png?v={__version__}" in html
     assert "__LSM_UI_ASSET_VERSION__" not in html
 
 

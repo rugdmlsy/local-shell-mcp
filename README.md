@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="docs/assets/logo.svg" alt="local-shell-mcp logo" width="152">
+<img src="docs/assets/logo.png" alt="local-shell-mcp logo" width="84">
 
 # local-shell-mcp
 

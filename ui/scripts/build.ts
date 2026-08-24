@@ -69,7 +69,7 @@ await Bun.write(
 )
 await rm(nativeCssPath, { force: true })
 await rm(consoleCssPath, { force: true })
-for (const asset of ["index.html", "logo.svg", "favicon.svg"]) {
+for (const asset of ["index.html", "logo.png"]) {
   await Bun.write(resolve(staticDir, asset), Bun.file(resolve(root, "static", asset)))
 }
 const liveScriptPath = resolve(staticDir, "live-workspace.js")
