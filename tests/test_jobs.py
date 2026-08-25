@@ -762,6 +762,46 @@ async def test_job_log_is_bounded_and_reports_truncation(tmp_path, monkeypatch):
     assert len(tail["output"].encode()) <= 32
 
 
+@pytest.mark.asyncio
+async def test_job_notify_on_finish_persists_and_retry_override(tmp_path, monkeypatch):
+    monkeypatch.setenv("LOCAL_SHELL_MCP_WORKSPACE_ROOT", str(tmp_path))
+    monkeypatch.setenv("LOCAL_SHELL_MCP_STATE_DIR", str(tmp_path / ".local-shell-mcp"))
+    get_settings.cache_clear()
+
+    sessions: set[str] = set()
+
+    async def fake_start_shell(cwd=".", name=None, command=None):  # noqa: ARG001
+        session_id = str(name)
+        sessions.add(session_id)
+        return {"session_id": session_id, "cwd": cwd, "backend": "fake"}
+
+    async def fake_list_shells():
+        return {"sessions": [{"session_id": item} for item in sorted(sessions)]}
+
+    monkeypatch.setattr(jobs_module, "start_shell", fake_start_shell)
+    monkeypatch.setattr(jobs_module, "list_shells", fake_list_shells)
+
+    started = await start_job("true", notify_on_finish=True)
+    assert started["notify_on_finish"] is True
+
+    def finish_current():
+        with jobs_module._store_transaction() as store:
+            row = jobs_module._find_job(store, started["job_id"])
+            sessions.discard(str(row.get("session_id") or ""))
+            row["status"] = "succeeded"
+            row["updated_at"] = 10.0
+            row["completed_at"] = 10.0
+            row["exit_code"] = 0
+
+    finish_current()
+    inherited = await retry_job(started["job_id"])
+    assert inherited["notify_on_finish"] is True
+
+    finish_current()
+    disabled = await retry_job(started["job_id"], notify_on_finish=False)
+    assert disabled["notify_on_finish"] is False
+
+
 def test_concurrent_job_starts_preserve_every_record(tmp_path, monkeypatch):
     monkeypatch.setenv("LOCAL_SHELL_MCP_WORKSPACE_ROOT", str(tmp_path))
     monkeypatch.setenv("LOCAL_SHELL_MCP_STATE_DIR", str(tmp_path / ".local-shell-mcp"))

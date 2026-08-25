@@ -1653,7 +1653,12 @@ async def _execute_shell_worker_tool(tool: str, args: dict[str, Any]) -> Any:
 
 async def _execute_job_worker_tool(tool: str, args: dict[str, Any]) -> Any:
     if tool == "job_start":
-        return await start_job(args["command"], args.get("cwd", "."), args.get("name"))
+        return await start_job(
+            args["command"],
+            args.get("cwd", "."),
+            args.get("name"),
+            bool(args.get("notify_on_finish", False)),
+        )
 
     if tool == "job_list":
         return await list_jobs(args.get("include_finished", True))
@@ -1665,7 +1670,7 @@ async def _execute_job_worker_tool(tool: str, args: dict[str, Any]) -> Any:
         return await stop_job(args["job_id"])
 
     if tool == "job_retry":
-        return await retry_job(args["job_id"])
+        return await retry_job(args["job_id"], args.get("notify_on_finish"))
     raise ValueError(f"unsupported remote worker tool: {tool}")
 
 

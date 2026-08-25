@@ -1,3 +1,3 @@
 """local-shell-mcp."""
 
-__version__ = "4.2.0+morrow.10"
+__version__ = "4.2.0+morrow.11"

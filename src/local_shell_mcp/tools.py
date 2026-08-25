@@ -2674,20 +2674,30 @@ def _register_job_tools(mcp: FastMCP, settings: Any, read_only_tool: ToolAnnotat
         command: str,
         cwd: str = ".",
         name: str | None = None,
+        notify_on_finish: bool = False,
         purpose: str | None = None,
         explanation: str | None = None,
         machine: str | None = None,
     ) -> ToolResult:
-        """Start a tracked long-running job locally or on a remote machine."""
+        """Start a tracked long-running job locally or on a remote machine.
+
+        ``notify_on_finish`` is opt-in metadata for completion notification
+        consumers; it defaults to ``False``.
+        """
         _audit_tool_purpose("job_start", purpose, explanation)
         if machine:
             return await _remote_call(
                 settings,
                 machine,
                 "job_start",
-                {"command": command, "cwd": cwd, "name": name},
+                {
+                    "command": command,
+                    "cwd": cwd,
+                    "name": name,
+                    "notify_on_finish": notify_on_finish,
+                },
             )
-        return await _tool_call(start_job, command, cwd, name)
+        return await _tool_call(start_job, command, cwd, name, notify_on_finish)
 
     @mcp.tool(structured_output=True, annotations=read_only_tool, meta=shell_read_meta)
     async def job_list(
@@ -2733,15 +2743,25 @@ def _register_job_tools(mcp: FastMCP, settings: Any, read_only_tool: ToolAnnotat
     @mcp.tool(structured_output=True, meta=shell_execute_meta)
     async def job_retry(
         job_id: str,
+        notify_on_finish: bool | None = None,
         purpose: str | None = None,
         explanation: str | None = None,
         machine: str | None = None,
     ) -> ToolResult:
-        """Restart a stopped or exited tracked local or remote job."""
+        """Restart a stopped or exited tracked local or remote job.
+
+        ``notify_on_finish`` defaults to the job's existing setting; pass a boolean
+        to change it for this and future attempts.
+        """
         _audit_tool_purpose("job_retry", purpose, explanation)
         if machine:
-            return await _remote_call(settings, machine, "job_retry", {"job_id": job_id})
-        return await _tool_call(retry_job, job_id)
+            return await _remote_call(
+                settings,
+                machine,
+                "job_retry",
+                {"job_id": job_id, "notify_on_finish": notify_on_finish},
+            )
+        return await _tool_call(retry_job, job_id, notify_on_finish)
 
 
 def _register_workspace_read_tools(

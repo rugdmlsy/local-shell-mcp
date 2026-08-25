@@ -231,6 +231,21 @@ async def test_machine_capable_tools_use_optional_machine_arguments(tmp_path, mo
 
 
 @pytest.mark.asyncio
+async def test_job_notification_flag_is_opt_in_and_retry_can_override(tmp_path, monkeypatch):
+    monkeypatch.setenv("LOCAL_SHELL_MCP_WORKSPACE_ROOT", str(tmp_path))
+    get_settings.cache_clear()
+
+    tools = {tool.name: tool for tool in await build_mcp().list_tools()}
+    start_prop = tools["job_start"].inputSchema["properties"]["notify_on_finish"]
+    retry_prop = tools["job_retry"].inputSchema["properties"]["notify_on_finish"]
+
+    assert start_prop["default"] is False
+    assert start_prop["type"] == "boolean"
+    assert retry_prop["default"] is None
+    assert {row.get("type") for row in retry_prop["anyOf"]} == {"boolean", "null"}
+
+
+@pytest.mark.asyncio
 async def test_key_tool_descriptions_guide_tool_choice(tmp_path, monkeypatch):
     monkeypatch.setenv("LOCAL_SHELL_MCP_WORKSPACE_ROOT", str(tmp_path))
     monkeypatch.setenv("LOCAL_SHELL_MCP_REMOTE_ENABLED", "false")
