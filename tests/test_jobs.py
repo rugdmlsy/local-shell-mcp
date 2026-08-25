@@ -781,8 +781,15 @@ async def test_job_notify_on_finish_persists_and_retry_override(tmp_path, monkey
     monkeypatch.setattr(jobs_module, "start_shell", fake_start_shell)
     monkeypatch.setattr(jobs_module, "list_shells", fake_list_shells)
 
-    started = await start_job("true", notify_on_finish=True)
+    started = await start_job(
+        "true",
+        notify_on_finish=True,
+        notify_title="Video render",
+        notify_summary_path="/tmp/render-notification.json",
+    )
     assert started["notify_on_finish"] is True
+    assert started["notify_title"] == "Video render"
+    assert started["notify_summary_path"] == "/tmp/render-notification.json"
 
     def finish_current():
         with jobs_module._store_transaction() as store:
@@ -796,10 +803,19 @@ async def test_job_notify_on_finish_persists_and_retry_override(tmp_path, monkey
     finish_current()
     inherited = await retry_job(started["job_id"])
     assert inherited["notify_on_finish"] is True
+    assert inherited["notify_title"] == "Video render"
+    assert inherited["notify_summary_path"] == "/tmp/render-notification.json"
 
     finish_current()
-    disabled = await retry_job(started["job_id"], notify_on_finish=False)
+    disabled = await retry_job(
+        started["job_id"],
+        notify_on_finish=False,
+        notify_title="Video render retry",
+        notify_summary_path="/tmp/render-notification-retry.json",
+    )
     assert disabled["notify_on_finish"] is False
+    assert disabled["notify_title"] == "Video render retry"
+    assert disabled["notify_summary_path"] == "/tmp/render-notification-retry.json"
 
 
 def test_concurrent_job_starts_preserve_every_record(tmp_path, monkeypatch):

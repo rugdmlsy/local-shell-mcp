@@ -236,13 +236,20 @@ async def test_job_notification_flag_is_opt_in_and_retry_can_override(tmp_path, 
     get_settings.cache_clear()
 
     tools = {tool.name: tool for tool in await build_mcp().list_tools()}
-    start_prop = tools["job_start"].inputSchema["properties"]["notify_on_finish"]
-    retry_prop = tools["job_retry"].inputSchema["properties"]["notify_on_finish"]
+    start_props = tools["job_start"].inputSchema["properties"]
+    retry_props = tools["job_retry"].inputSchema["properties"]
+    start_prop = start_props["notify_on_finish"]
+    retry_prop = retry_props["notify_on_finish"]
 
     assert start_prop["default"] is False
     assert start_prop["type"] == "boolean"
     assert retry_prop["default"] is None
     assert {row.get("type") for row in retry_prop["anyOf"]} == {"boolean", "null"}
+    for key in ("notify_title", "notify_summary_path"):
+        assert start_props[key]["default"] is None
+        assert retry_props[key]["default"] is None
+        assert {row.get("type") for row in start_props[key]["anyOf"]} == {"string", "null"}
+        assert {row.get("type") for row in retry_props[key]["anyOf"]} == {"string", "null"}
 
 
 @pytest.mark.asyncio

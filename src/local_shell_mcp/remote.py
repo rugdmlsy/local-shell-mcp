@@ -1658,6 +1658,8 @@ async def _execute_job_worker_tool(tool: str, args: dict[str, Any]) -> Any:
             args.get("cwd", "."),
             args.get("name"),
             bool(args.get("notify_on_finish", False)),
+            args.get("notify_title"),
+            args.get("notify_summary_path"),
         )
 
     if tool == "job_list":
@@ -1670,7 +1672,12 @@ async def _execute_job_worker_tool(tool: str, args: dict[str, Any]) -> Any:
         return await stop_job(args["job_id"])
 
     if tool == "job_retry":
-        return await retry_job(args["job_id"], args.get("notify_on_finish"))
+        return await retry_job(
+            args["job_id"],
+            args.get("notify_on_finish"),
+            args.get("notify_title"),
+            args.get("notify_summary_path"),
+        )
     raise ValueError(f"unsupported remote worker tool: {tool}")
 
 

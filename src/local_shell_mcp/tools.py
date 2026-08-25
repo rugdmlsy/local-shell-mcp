@@ -2675,6 +2675,8 @@ def _register_job_tools(mcp: FastMCP, settings: Any, read_only_tool: ToolAnnotat
         cwd: str = ".",
         name: str | None = None,
         notify_on_finish: bool = False,
+        notify_title: str | None = None,
+        notify_summary_path: str | None = None,
         purpose: str | None = None,
         explanation: str | None = None,
         machine: str | None = None,
@@ -2682,7 +2684,9 @@ def _register_job_tools(mcp: FastMCP, settings: Any, read_only_tool: ToolAnnotat
         """Start a tracked long-running job locally or on a remote machine.
 
         ``notify_on_finish`` is opt-in metadata for completion notification
-        consumers; it defaults to ``False``.
+        consumers; it defaults to ``False``. ``notify_title`` supplies a human
+        title and ``notify_summary_path`` may point to a task-produced JSON
+        summary document for richer completion messages.
         """
         _audit_tool_purpose("job_start", purpose, explanation)
         if machine:
@@ -2695,9 +2699,19 @@ def _register_job_tools(mcp: FastMCP, settings: Any, read_only_tool: ToolAnnotat
                     "cwd": cwd,
                     "name": name,
                     "notify_on_finish": notify_on_finish,
+                    "notify_title": notify_title,
+                    "notify_summary_path": notify_summary_path,
                 },
             )
-        return await _tool_call(start_job, command, cwd, name, notify_on_finish)
+        return await _tool_call(
+            start_job,
+            command,
+            cwd,
+            name,
+            notify_on_finish,
+            notify_title,
+            notify_summary_path,
+        )
 
     @mcp.tool(structured_output=True, annotations=read_only_tool, meta=shell_read_meta)
     async def job_list(
@@ -2744,14 +2758,17 @@ def _register_job_tools(mcp: FastMCP, settings: Any, read_only_tool: ToolAnnotat
     async def job_retry(
         job_id: str,
         notify_on_finish: bool | None = None,
+        notify_title: str | None = None,
+        notify_summary_path: str | None = None,
         purpose: str | None = None,
         explanation: str | None = None,
         machine: str | None = None,
     ) -> ToolResult:
         """Restart a stopped or exited tracked local or remote job.
 
-        ``notify_on_finish`` defaults to the job's existing setting; pass a boolean
-        to change it for this and future attempts.
+        Notification metadata defaults to the job's existing values. Pass
+        ``notify_on_finish`` to toggle delivery or non-null title/summary-path
+        values to replace the existing completion-message metadata.
         """
         _audit_tool_purpose("job_retry", purpose, explanation)
         if machine:
@@ -2759,9 +2776,16 @@ def _register_job_tools(mcp: FastMCP, settings: Any, read_only_tool: ToolAnnotat
                 settings,
                 machine,
                 "job_retry",
-                {"job_id": job_id, "notify_on_finish": notify_on_finish},
+                {
+                    "job_id": job_id,
+                    "notify_on_finish": notify_on_finish,
+                    "notify_title": notify_title,
+                    "notify_summary_path": notify_summary_path,
+                },
             )
-        return await _tool_call(retry_job, job_id, notify_on_finish)
+        return await _tool_call(
+            retry_job, job_id, notify_on_finish, notify_title, notify_summary_path
+        )
 
 
 def _register_workspace_read_tools(

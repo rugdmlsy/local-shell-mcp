@@ -823,6 +823,8 @@ def _public_job(job: dict[str, Any]) -> dict[str, Any]:
         "output_bytes": int(job.get("output_bytes") or 0),
         "attempts": job.get("attempts", 1),
         "notify_on_finish": bool(job.get("notify_on_finish", False)),
+        "notify_title": job.get("notify_title"),
+        "notify_summary_path": job.get("notify_summary_path"),
         "progress": job.get("progress"),
         "result": job.get("result"),
     }
@@ -1106,6 +1108,8 @@ async def start_job(
     cwd: str = ".",
     name: str | None = None,
     notify_on_finish: bool = False,
+    notify_title: str | None = None,
+    notify_summary_path: str | None = None,
 ) -> dict[str, Any]:
     job_id = _new_job_id()
     display_name = name or job_id
@@ -1130,6 +1134,8 @@ async def start_job(
         "exit_code": None,
         "attempts": 1,
         "notify_on_finish": bool(notify_on_finish),
+        "notify_title": notify_title,
+        "notify_summary_path": notify_summary_path,
     }
     operation_id = _begin_job_operation(job, "start")
     try:
@@ -1310,7 +1316,10 @@ async def _stop_managed_job(job_id: str) -> dict[str, Any]:
 
 
 async def _retry_managed_job(
-    job_id: str, notify_on_finish: bool | None = None
+    job_id: str,
+    notify_on_finish: bool | None = None,
+    notify_title: str | None = None,
+    notify_summary_path: str | None = None,
 ) -> dict[str, Any]:
     with _store_transaction() as store:
         job = _refresh_job_status(_find_job(store, job_id), set())
@@ -1331,6 +1340,10 @@ async def _retry_managed_job(
         started_at = _utc()
         if notify_on_finish is not None:
             job["notify_on_finish"] = bool(notify_on_finish)
+        if notify_title is not None:
+            job["notify_title"] = notify_title
+        if notify_summary_path is not None:
+            job["notify_summary_path"] = notify_summary_path
         job.update(
             {
                 "status": "running",
@@ -1438,7 +1451,10 @@ async def stop_job(job_id: str) -> dict[str, Any]:
 
 
 async def retry_job(
-    job_id: str, notify_on_finish: bool | None = None
+    job_id: str,
+    notify_on_finish: bool | None = None,
+    notify_title: str | None = None,
+    notify_summary_path: str | None = None,
 ) -> dict[str, Any]:
     with _store_transaction() as store:
         job = _find_job(store, job_id)
@@ -1446,7 +1462,9 @@ async def retry_job(
         if get_settings().disable_local and not managed:
             raise ValueError("local shell jobs are unavailable when local access is disabled")
     if managed:
-        return await _retry_managed_job(job_id, notify_on_finish)
+        return await _retry_managed_job(
+            job_id, notify_on_finish, notify_title, notify_summary_path
+        )
     active = _active_session_ids(await list_shells())
     operation_id = ""
     try:
@@ -1461,6 +1479,10 @@ async def retry_job(
             shell_name = _shell_safe_name(f"{display_name}-{job_id}-{attempts}")
             if notify_on_finish is not None:
                 job["notify_on_finish"] = bool(notify_on_finish)
+            if notify_title is not None:
+                job["notify_title"] = notify_title
+            if notify_summary_path is not None:
+                job["notify_summary_path"] = notify_summary_path
             job.update(
                 {
                     "status": "retrying",
