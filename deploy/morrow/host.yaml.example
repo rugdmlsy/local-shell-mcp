@@ -20,7 +20,7 @@ state_backend: file
 allow_full_container: false
 
 logical_sessions_enabled: true
-live_workspace_enabled: false
+live_workspace_enabled: true
 ui_enabled: true
 ui_path: /ui
 file_download_enabled: true

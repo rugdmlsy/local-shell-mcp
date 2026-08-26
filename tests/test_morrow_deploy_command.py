@@ -8,6 +8,8 @@ from pathlib import Path
 REPOSITORY = Path(__file__).parents[1]
 DEPLOY_COMMAND = REPOSITORY / "deploy/morrow/deploy-vps.sh"
 MCP_PROBE = REPOSITORY / "scripts/probe-mcp.py"
+HOST_CONFIG = REPOSITORY / "deploy/morrow/host.yaml.example"
+HOST_LAUNCHER = REPOSITORY / "deploy/morrow/run-host-vps.sh"
 
 
 def test_deploy_command_is_executable_and_parses() -> None:
@@ -46,6 +48,21 @@ def test_deploy_command_keeps_release_and_rollback_guards() -> None:
         assert required in script
 
     assert 'local release_name="$1"' not in script
+
+
+def test_production_owns_official_live_workspace_and_goal_continuation() -> None:
+    config = HOST_CONFIG.read_text(encoding="utf-8")
+    launcher = HOST_LAUNCHER.read_text(encoding="utf-8")
+
+    assert "disable_local: false" in config
+    assert "logical_sessions_enabled: true" in config
+    assert "live_workspace_enabled: true" in config
+    assert "LOCAL_SHELL_MCP_DISABLE_LOCAL=false" in launcher
+    assert "LOCAL_SHELL_MCP_LOGICAL_SESSIONS_ENABLED=true" in launcher
+    assert "LOCAL_SHELL_MCP_LIVE_WORKSPACE_ENABLED=true" in launcher
+    assert "do not delegate continuation to Morrow Chat" in (
+        REPOSITORY / "deploy/morrow/README.md"
+    ).read_text(encoding="utf-8")
 
 
 def test_probe_accepts_pin_from_environment_without_a_command_line_secret() -> None:

@@ -74,8 +74,10 @@ Session/Plan or Dynamic MCP state.
 ## Candidate and cutover
 
 Copy `host.yaml.example` to the private `host-v4.2.yaml`, retaining the values
-shown for local execution, remotes, Session/Plan, file state, and disabled Live
-Workspace. Secrets stay in the existing mode-0600 `service.env`.
+shown for local execution, remotes, Session/Plan, file state, and the official
+v4.2 Live Workspace. Live Workspace owns the upstream Goal/Plan continuation
+path again; do not delegate continuation to Morrow Chat. Secrets stay in the
+existing mode-0600 `service.env`.
 
 Start the candidate on a loopback-only alternate port with a copied config and
 an isolated state directory. Do not point a production worker identity at both

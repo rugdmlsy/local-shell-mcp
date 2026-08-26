@@ -14,14 +14,14 @@ unset CLOUDFLARE_TUNNEL_TOKEN LOCAL_SHELL_MCP_PERSISTENT_CREDENTIALS
 
 # Environment variables override YAML in LSM. Pin the safety-critical production
 # shape here as well so an older service.env cannot silently enable remote-only,
-# stateless, full-container, or the built-in Live Workspace modes.
+# stateless, or full-container modes. Official v4.2 Live Workspace remains enabled.
 export LOCAL_SHELL_MCP_DISABLE_LOCAL=false
 export LOCAL_SHELL_MCP_REMOTE_ENABLED=true
 export LOCAL_SHELL_MCP_STATELESS_CONTROLLER=false
 export LOCAL_SHELL_MCP_STATE_BACKEND=file
 export LOCAL_SHELL_MCP_ALLOW_FULL_CONTAINER=false
 export LOCAL_SHELL_MCP_LOGICAL_SESSIONS_ENABLED=true
-export LOCAL_SHELL_MCP_LIVE_WORKSPACE_ENABLED=false
+export LOCAL_SHELL_MCP_LIVE_WORKSPACE_ENABLED=true
 
 readonly executable="${deploy_root}/current/.venv/bin/local-shell-mcp"
 test -x "${executable}"
