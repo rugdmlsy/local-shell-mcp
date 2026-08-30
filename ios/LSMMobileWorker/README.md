@@ -138,4 +138,4 @@ xcodebuild \
 
 For the APNs-ready compile path, replace `Debug` with `PushDebug`. A signed `PushDebug` build additionally requires a provisioning team that supports Push Notifications.
 
-For a physical iPhone, select an Apple Development team, enable Developer Mode, pair/trust the Mac, then build/install the normal `Debug` configuration. The current Phase 2 app version is `0.2.0`.
+For a physical iPhone, select an Apple Development team, enable Developer Mode, pair/trust the Mac, then build/install the normal `Debug` configuration. The current Phase 2 app version is `0.2.1`.

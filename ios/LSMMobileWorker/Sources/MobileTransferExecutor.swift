@@ -1,16 +1,21 @@
 import CryptoKit
 import Foundation
 
-struct MobileTransferExecutor {
+final class MobileTransferExecutor {
     enum TransferError: LocalizedError {
         case unsupportedTool(String)
         case missingArgument(String)
         case unsafeTransferURL
         case invalidExpectedMetadata
+        case invalidTransferID
+        case invalidOffset
+        case invalidBase64
         case chunkTooLarge
+        case nonSequentialChunk
         case sizeMismatch
         case hashMismatch
         case destinationExists
+        case destinationIsDirectory
         case invalidControllerResponse
 
         var errorDescription: String? {
@@ -19,22 +24,47 @@ struct MobileTransferExecutor {
             case .missingArgument(let name): return "Missing required argument: \(name)"
             case .unsafeTransferURL: return "Transfer URLs must belong to the paired LSM controller transfer endpoint."
             case .invalidExpectedMetadata: return "The transfer metadata is invalid."
+            case .invalidTransferID: return "The transfer ID is invalid or no longer active."
+            case .invalidOffset: return "The transfer offset must be non-negative."
+            case .invalidBase64: return "The transfer chunk is not valid base64."
             case .chunkTooLarge: return "The transfer chunk exceeds the 4 MiB mobile limit."
+            case .nonSequentialChunk: return "Mobile transfer chunks must arrive sequentially without gaps or overlap."
             case .sizeMismatch: return "The transferred file size does not match the controller metadata."
             case .hashMismatch: return "The transferred file SHA-256 does not match the controller metadata."
             case .destinationExists: return "The destination exists and overwrite is disabled."
+            case .destinationIsDirectory: return "The transfer destination is a directory."
             case .invalidControllerResponse: return "The transfer endpoint returned an invalid response."
             }
         }
     }
 
+    private struct WriteSession {
+        let id: String
+        let destination: URL
+        let temporary: URL
+        let overwrite: Bool
+        let expectedBytes: Int?
+        var bytesReceived: Int
+    }
+
     private let maxChunkBytes = 4 * 1024 * 1024
+    private var writeSessions: [String: WriteSession] = [:]
 
     func execute(tool: String, args: [String: Any], controllerServer: String) async throws -> Any {
         switch tool {
         case "transfer_stat":
             guard let path = args["path"] as? String else { throw TransferError.missingArgument("path") }
             return try MobileFileStore.stat(path, includeSHA256: (args["sha256"] as? Bool) ?? true)
+        case "transfer_read_chunk":
+            return try readChunk(args)
+        case "transfer_begin_write":
+            return try beginWrite(args)
+        case "transfer_write_chunk":
+            return try writeChunk(args)
+        case "transfer_finish_write":
+            return try finishWrite(args)
+        case "transfer_abort_write":
+            return try abortWrite(args)
         case "transfer_upload_url":
             return try await uploadChunk(args, controllerServer: controllerServer)
         case "transfer_download_url":
@@ -42,6 +72,189 @@ struct MobileTransferExecutor {
         default:
             throw TransferError.unsupportedTool(tool)
         }
+    }
+
+    private func readChunk(_ args: [String: Any]) throws -> [String: Any] {
+        guard let path = args["path"] as? String else { throw TransferError.missingArgument("path") }
+        let offset = (args["offset"] as? NSNumber)?.intValue ?? 0
+        guard offset >= 0 else { throw TransferError.invalidOffset }
+        let requested = (args["chunk_size"] as? NSNumber)?.intValue ?? 1024 * 1024
+        guard requested > 0 else { throw TransferError.invalidExpectedMetadata }
+        let chunkSize = min(requested, maxChunkBytes)
+
+        let source = try MobileFileStore.resolve(path)
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: source.path, isDirectory: &isDirectory) else {
+            throw MobileFileStore.StoreError.fileNotFound
+        }
+        guard !isDirectory.boolValue else { throw TransferError.destinationIsDirectory }
+        let attrs = try FileManager.default.attributesOfItem(atPath: source.path)
+        let size = (attrs[.size] as? NSNumber)?.intValue ?? 0
+        guard offset <= size else { throw TransferError.invalidOffset }
+
+        let handle = try FileHandle(forReadingFrom: source)
+        defer { try? handle.close() }
+        try handle.seek(toOffset: UInt64(offset))
+        let data = try handle.read(upToCount: chunkSize) ?? Data()
+        return [
+            "path": MobileFileStore.relativePath(source),
+            "offset": offset,
+            "bytes": data.count,
+            "size": size,
+            "eof": offset + data.count >= size,
+            "sha256": sha256(data),
+            "data_b64": data.base64EncodedString(),
+        ]
+    }
+
+    private func beginWrite(_ args: [String: Any]) throws -> [String: Any] {
+        guard let path = args["path"] as? String else { throw TransferError.missingArgument("path") }
+        let overwrite = (args["overwrite"] as? Bool) ?? true
+        let expectedBytes = (args["expected_bytes"] as? NSNumber)?.intValue
+        if let expectedBytes, expectedBytes < 0 { throw TransferError.invalidExpectedMetadata }
+
+        let destination = try MobileFileStore.resolve(path)
+        guard destination.standardizedFileURL != MobileFileStore.root.standardizedFileURL else {
+            throw MobileFileStore.StoreError.unsafePath
+        }
+        var isDirectory: ObjCBool = false
+        let exists = FileManager.default.fileExists(atPath: destination.path, isDirectory: &isDirectory)
+        if exists && isDirectory.boolValue { throw TransferError.destinationIsDirectory }
+        if exists && !overwrite { throw TransferError.destinationExists }
+        try FileManager.default.createDirectory(
+            at: destination.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+
+        let transferID = UUID().uuidString.lowercased().replacingOccurrences(of: "-", with: "")
+        let temporary = destination.deletingLastPathComponent().appendingPathComponent(
+            ".\(destination.lastPathComponent).local-shell-mcp-transfer-\(transferID).tmp"
+        )
+        guard FileManager.default.createFile(atPath: temporary.path, contents: Data()) else {
+            throw TransferError.invalidTransferID
+        }
+        writeSessions[transferID] = WriteSession(
+            id: transferID,
+            destination: destination,
+            temporary: temporary,
+            overwrite: overwrite,
+            expectedBytes: expectedBytes,
+            bytesReceived: 0
+        )
+        return [
+            "path": MobileFileStore.relativePath(destination),
+            "temp_path": MobileFileStore.relativePath(temporary),
+            "transfer_id": transferID,
+            "created": !exists,
+            "expected_bytes": expectedBytes.map { $0 } ?? NSNull(),
+        ]
+    }
+
+    private func writeChunk(_ args: [String: Any]) throws -> [String: Any] {
+        guard let path = args["path"] as? String else { throw TransferError.missingArgument("path") }
+        guard let transferID = args["transfer_id"] as? String else {
+            throw TransferError.missingArgument("transfer_id")
+        }
+        guard let offset = (args["offset"] as? NSNumber)?.intValue else {
+            throw TransferError.missingArgument("offset")
+        }
+        guard offset >= 0 else { throw TransferError.invalidOffset }
+        guard let encoded = args["data_b64"] as? String else {
+            throw TransferError.missingArgument("data_b64")
+        }
+        guard let data = Data(base64Encoded: encoded) else { throw TransferError.invalidBase64 }
+        guard data.count <= maxChunkBytes else { throw TransferError.chunkTooLarge }
+        guard var session = writeSessions[transferID] else { throw TransferError.invalidTransferID }
+        let destination = try MobileFileStore.resolve(path)
+        guard destination.standardizedFileURL == session.destination.standardizedFileURL else {
+            throw TransferError.invalidTransferID
+        }
+        guard offset == session.bytesReceived else { throw TransferError.nonSequentialChunk }
+        if let expected = session.expectedBytes, offset + data.count > expected {
+            throw TransferError.sizeMismatch
+        }
+        let digest = sha256(data)
+        if let expectedHash = args["expected_sha256"] as? String,
+           digest.lowercased() != expectedHash.lowercased() {
+            throw TransferError.hashMismatch
+        }
+
+        let handle = try FileHandle(forWritingTo: session.temporary)
+        defer { try? handle.close() }
+        try handle.seek(toOffset: UInt64(offset))
+        try handle.write(contentsOf: data)
+        try handle.synchronize()
+        session.bytesReceived += data.count
+        writeSessions[transferID] = session
+        return [
+            "path": MobileFileStore.relativePath(session.destination),
+            "temp_path": MobileFileStore.relativePath(session.temporary),
+            "offset": offset,
+            "bytes": data.count,
+            "sha256": digest,
+        ]
+    }
+
+    private func finishWrite(_ args: [String: Any]) throws -> [String: Any] {
+        guard let path = args["path"] as? String else { throw TransferError.missingArgument("path") }
+        guard let transferID = args["transfer_id"] as? String else {
+            throw TransferError.missingArgument("transfer_id")
+        }
+        guard let session = writeSessions[transferID] else { throw TransferError.invalidTransferID }
+        let destination = try MobileFileStore.resolve(path)
+        guard destination.standardizedFileURL == session.destination.standardizedFileURL else {
+            throw TransferError.invalidTransferID
+        }
+        let explicitExpected = (args["expected_bytes"] as? NSNumber)?.intValue
+        let expectedBytes = explicitExpected ?? session.expectedBytes
+        if let expectedBytes, expectedBytes < 0 { throw TransferError.invalidExpectedMetadata }
+        let attrs = try FileManager.default.attributesOfItem(atPath: session.temporary.path)
+        let size = (attrs[.size] as? NSNumber)?.intValue ?? -1
+        if let expectedBytes, size != expectedBytes { throw TransferError.sizeMismatch }
+        guard size == session.bytesReceived else { throw TransferError.sizeMismatch }
+
+        let expectedHash = args["expected_sha256"] as? String
+        let digest = try MobileFileStore.sha256(session.temporary)
+        if let expectedHash, digest.lowercased() != expectedHash.lowercased() {
+            throw TransferError.hashMismatch
+        }
+        if FileManager.default.fileExists(atPath: destination.path) {
+            if !session.overwrite { throw TransferError.destinationExists }
+            _ = try FileManager.default.replaceItemAt(destination, withItemAt: session.temporary)
+        } else {
+            try FileManager.default.moveItem(at: session.temporary, to: destination)
+        }
+        writeSessions.removeValue(forKey: transferID)
+        return [
+            "path": MobileFileStore.relativePath(destination),
+            "bytes": size,
+            "sha256": expectedHash == nil ? NSNull() : digest,
+            "completed": true,
+        ]
+    }
+
+    private func abortWrite(_ args: [String: Any]) throws -> [String: Any] {
+        guard let path = args["path"] as? String else { throw TransferError.missingArgument("path") }
+        guard let transferID = args["transfer_id"] as? String else {
+            throw TransferError.missingArgument("transfer_id")
+        }
+        let destination = try MobileFileStore.resolve(path)
+        guard let session = writeSessions[transferID],
+              destination.standardizedFileURL == session.destination.standardizedFileURL else {
+            throw TransferError.invalidTransferID
+        }
+        writeSessions.removeValue(forKey: transferID)
+        let existed = FileManager.default.fileExists(atPath: session.temporary.path)
+        if existed { try FileManager.default.removeItem(at: session.temporary) }
+        return [
+            "path": MobileFileStore.relativePath(destination),
+            "temp_path": MobileFileStore.relativePath(session.temporary),
+            "deleted": existed,
+        ]
+    }
+
+    private func sha256(_ data: Data) -> String {
+        SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
 
     private func transferURL(_ raw: String, controllerServer: String) throws -> URL {
