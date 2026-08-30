@@ -775,7 +775,7 @@ When `machine` is supplied, the call additionally requires `remote:use` and runs
 
 ### `mobile_action`
 
-Run one native action on an LSM mobile worker. arguments are action-specific: notify={title,body}; open_url={url}; file actions use {path} plus text for write_text.
+Run one native action on an LSM mobile worker. Permission-gated camera/photos actions never prompt remotely; http_probe is bounded; sandbox file actions stay under the app-managed LSM root.
 
 | Parameter | Type | Required/default | Description |
 |---|---|---|---|

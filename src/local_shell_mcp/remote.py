@@ -234,6 +234,9 @@ class RemoteWorker:
     status: str = "online"
     capabilities: list[str] = field(default_factory=list)
     info: dict[str, Any] = field(default_factory=dict)
+    push_token: str | None = None
+    push_environment: str | None = None
+    last_wake_at: float = 0.0
     queue: asyncio.Queue[dict[str, Any]] = field(default_factory=asyncio.Queue)
 
 
@@ -387,6 +390,11 @@ class RemoteManager:
             worker.created_at = float(item.get("created_at") or _utc())
             worker.capabilities = list(item.get("capabilities") or [])
             worker.info = dict(item.get("info") or {})
+            worker.push_token = str(item.get("push_token") or "") or None
+            push_environment = str(item.get("push_environment") or "")
+            worker.push_environment = (
+                push_environment if push_environment in {"development", "production"} else None
+            )
             workers[name] = worker
             tokens[access] = name
         now = _utc()
@@ -430,6 +438,8 @@ class RemoteManager:
                     "created_at": worker.created_at,
                     "capabilities": worker.capabilities,
                     "info": worker.info,
+                    "push_token": worker.push_token,
+                    "push_environment": worker.push_environment,
                 }
                 for worker in sorted(self.workers.values(), key=lambda item: item.name)
             ],
@@ -622,6 +632,72 @@ class RemoteManager:
             "heartbeat_interval_s": _remote_heartbeat_interval_s(),
         }
 
+    async def register_push_token(self, access: str, payload: dict[str, Any]) -> dict[str, Any]:
+        token = str(payload.get("token") or "").strip().lower()
+        environment = str(payload.get("environment") or "").strip().lower()
+        if token:
+            if len(token) > 256 or any(character not in "0123456789abcdef" for character in token):
+                raise ValueError("invalid APNs device token")
+            if environment not in {"development", "production"}:
+                raise ValueError("push environment must be development or production")
+        async with self._lock:
+            with self._state_lock, self._registry_transaction_unlocked():
+                name = self.tokens.get(access)
+                if not name:
+                    raise PermissionError("invalid worker identity")
+                worker = self.workers.get(name)
+                if not worker:
+                    raise PermissionError("worker identity is no longer valid")
+                if "mobile" not in set(worker.capabilities):
+                    raise ValueError("push registration is only supported for mobile workers")
+                worker.push_token = token or None
+                worker.push_environment = environment if token else None
+                self._save_registry_unlocked()
+        with contextlib.suppress(Exception):
+            audit("remote_worker_push_registration", machine=name, registered=bool(token))
+        return {
+            "registered": bool(token),
+            "environment": environment if token else None,
+            "name": name,
+        }
+
+    def _wake_is_configured(self, worker: RemoteWorker) -> bool:
+        if not worker.push_token or worker.push_environment not in {"development", "production"}:
+            return False
+        if "mobile.background_wake" not in set(worker.capabilities):
+            return False
+        try:
+            from .mobile_apns import apns_configured
+
+            return apns_configured()
+        except Exception:
+            return False
+
+    async def _send_worker_wake(self, worker: RemoteWorker, reason: str = "job") -> dict[str, Any]:
+        from .mobile_apns import send_background_wake
+
+        settings = get_settings()
+        now = _utc()
+        minimum = max(1, int(settings.remote_mobile_apns_min_wake_interval_s))
+        if worker.last_wake_at and now - worker.last_wake_at < minimum:
+            return {"accepted": True, "rate_limited": True}
+        assert worker.push_token is not None
+        assert worker.push_environment is not None
+        result = await send_background_wake(
+            worker.push_token,
+            environment=worker.push_environment,
+            reason=reason,
+        )
+        worker.last_wake_at = now
+        with contextlib.suppress(Exception):
+            audit(
+                "remote_worker_wake_sent",
+                machine=worker.name,
+                environment=worker.push_environment,
+                reason=reason,
+            )
+        return result
+
     def _default_machine_name(self, payload: dict[str, Any]) -> str:
         self._load_registry_unlocked()
         info = payload.get("info") if isinstance(payload.get("info"), dict) else {}
@@ -802,14 +878,21 @@ class RemoteManager:
         job_id = "job_" + uuid.uuid4().hex
         loop = asyncio.get_running_loop()
         future: asyncio.Future[dict[str, Any]] = loop.create_future()
+        should_wake = False
         with self._state_lock:
             self._load_registry_unlocked()
             worker = self.workers.get(machine)
             if not worker:
                 raise ValueError(f"unknown remote machine: {machine}")
-            if _utc() - worker.last_seen > max(2 * settings.remote_poll_timeout_s, 60):
+            offline = _utc() - worker.last_seen > max(2 * settings.remote_poll_timeout_s, 60)
+            wake_configured = self._wake_is_configured(worker)
+            if offline:
                 worker.status = "offline"
-                raise RuntimeError(f"remote machine is offline: {machine}")
+                if not wake_configured:
+                    raise RuntimeError(f"remote machine is offline: {machine}")
+                should_wake = True
+            elif wake_configured and str(worker.info.get("app_state") or "") != "active":
+                should_wake = True
             max_pending = max(1, settings.remote_max_pending_jobs)
             machine_pending = sum(1 for value in self.pending_machines.values() if value == machine)
             if worker.queue.qsize() >= max_pending or machine_pending >= max_pending:
@@ -824,6 +907,12 @@ class RemoteManager:
                     "expires_at": _utc() + effective_timeout,
                 }
             )
+        if should_wake:
+            try:
+                await self._send_worker_wake(worker, "job")
+            except Exception as exc:
+                self._cancel_job(job_id)
+                raise RuntimeError(f"failed to wake remote machine: {machine}: {exc}") from exc
         preserve_pending = False
         try:
             result = await asyncio.wait_for(asyncio.shield(future), timeout=effective_timeout)
@@ -902,6 +991,12 @@ class RemoteManager:
                         "queue_depth": worker.queue.qsize(),
                         "capabilities": list(worker.capabilities),
                         "info": dict(worker.info),
+                        "wake": {
+                            "registered": bool(worker.push_token),
+                            "provider_configured": self._wake_is_configured(worker),
+                            "environment": worker.push_environment if worker.push_token else None,
+                            "last_requested_at": worker.last_wake_at or None,
+                        },
                     }
                 )
         rows.sort(key=lambda item: (item["status"] != "online", item["name"]))
@@ -1077,6 +1172,21 @@ async def resume_endpoint(request: Any):  # noqa: ANN201
         return _error(str(exc), type(exc).__name__, 401)
 
 
+async def push_token_endpoint(request: Any):  # noqa: ANN201
+    from starlette.responses import JSONResponse
+
+    try:
+        return JSONResponse(
+            _ok(
+                await remote_manager().register_push_token(
+                    _bearer_token(request), await request.json()
+                )
+            )
+        )
+    except Exception as exc:
+        return _error(str(exc), type(exc).__name__, 401)
+
+
 async def poll_endpoint(request: Any):  # noqa: ANN201
     from starlette.responses import JSONResponse
 
@@ -1120,6 +1230,7 @@ def remote_routes() -> list[Any]:
         Route(REMOTE_WORKER_BUNDLE_PATH, worker_bundle, methods=["GET"]),
         Route(f"{REMOTE_API_PREFIX}/register", register_endpoint, methods=["POST"]),
         Route(f"{REMOTE_API_PREFIX}/res" + "ume", resume_endpoint, methods=["POST"]),
+        Route(f"{REMOTE_API_PREFIX}/push-token", push_token_endpoint, methods=["POST"]),
         Route(f"{REMOTE_API_PREFIX}/poll", poll_endpoint, methods=["POST"]),
         Route(f"{REMOTE_API_PREFIX}/heartbeat", heartbeat_endpoint, methods=["POST"]),
         Route(f"{REMOTE_API_PREFIX}/result", result_endpoint, methods=["POST"]),

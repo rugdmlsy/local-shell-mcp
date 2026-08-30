@@ -372,6 +372,7 @@ def remote_routes() -> list[Any]:
         Route(remote.REMOTE_WORKER_BUNDLE_PATH, worker_bundle, methods=["GET"]),
         Route(f"{remote.REMOTE_API_PREFIX}/register", remote.register_endpoint, methods=["POST"]),
         Route(f"{remote.REMOTE_API_PREFIX}/resume", remote.resume_endpoint, methods=["POST"]),
+        Route(f"{remote.REMOTE_API_PREFIX}/push-token", remote.push_token_endpoint, methods=["POST"]),
         Route(f"{remote.REMOTE_API_PREFIX}/poll", remote.poll_endpoint, methods=["POST"]),
         Route(f"{remote.REMOTE_API_PREFIX}/heartbeat", remote.heartbeat_endpoint, methods=["POST"]),
         Route(f"{remote.REMOTE_API_PREFIX}/result", remote.result_endpoint, methods=["POST"]),

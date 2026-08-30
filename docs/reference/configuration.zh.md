@@ -118,6 +118,12 @@ LOCAL_SHELL_MCP_OAUTH_JWT_SECRET=change-me-long-random-secret
 | `remote_transfer_s3_region` | `LOCAL_SHELL_MCP_REMOTE_TRANSFER_S3_REGION` | `None` | 可选 S3 region。 |
 | `remote_transfer_s3_endpoint_url` | `LOCAL_SHELL_MCP_REMOTE_TRANSFER_S3_ENDPOINT_URL` | `None` | 可选 S3-compatible endpoint URL。 |
 | `remote_transfer_s3_presign_ttl_s` | `LOCAL_SHELL_MCP_REMOTE_TRANSFER_S3_PRESIGN_TTL_S` | `3600` | Presigned PUT/GET URL lifetime；transfer 后会删除 temporary objects。 |
+| `remote_mobile_apns_enabled` | `LOCAL_SHELL_MCP_REMOTE_MOBILE_APNS_ENABLED` | `False` | 可选启用 native mobile worker 的 best-effort APNs silent-push 唤醒。 |
+| `remote_mobile_apns_team_id` | `LOCAL_SHELL_MCP_REMOTE_MOBILE_APNS_TEAM_ID` | `None` | 用于签发 APNs provider JWT 的 Apple Developer Team ID；诊断输出会隐藏。 |
+| `remote_mobile_apns_key_id` | `LOCAL_SHELL_MCP_REMOTE_MOBILE_APNS_KEY_ID` | `None` | APNs token-signing key ID；诊断输出会隐藏。 |
+| `remote_mobile_apns_key_path` | `LOCAL_SHELL_MCP_REMOTE_MOBILE_APNS_KEY_PATH` | `None` | APNs `.p8` provider key 路径，应放在仓库外；诊断输出会隐藏。 |
+| `remote_mobile_apns_topic` | `LOCAL_SHELL_MCP_REMOTE_MOBILE_APNS_TOPIC` | `'com.xycdev.lsmmobileworker'` | Native iOS worker 的 APNs topic / bundle identifier。 |
+| `remote_mobile_apns_min_wake_interval_s` | `LOCAL_SHELL_MCP_REMOTE_MOBILE_APNS_MIN_WAKE_INTERVAL_S` | `60` | 同一 worker 两次 APNs wake request 之间的最小间隔。 |
 
 ### Shell 与可执行文件路径
 

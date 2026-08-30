@@ -117,6 +117,12 @@ For local-only testing, `auth_bypass_localhost` is enabled by default. Do not ex
 | `remote_transfer_s3_region` | `LOCAL_SHELL_MCP_REMOTE_TRANSFER_S3_REGION` | `None` | Optional S3 region. |
 | `remote_transfer_s3_endpoint_url` | `LOCAL_SHELL_MCP_REMOTE_TRANSFER_S3_ENDPOINT_URL` | `None` | Optional S3-compatible endpoint URL. |
 | `remote_transfer_s3_presign_ttl_s` | `LOCAL_SHELL_MCP_REMOTE_TRANSFER_S3_PRESIGN_TTL_S` | `3600` | Presigned PUT/GET URL lifetime. Temporary objects are deleted after transfer. |
+| `remote_mobile_apns_enabled` | `LOCAL_SHELL_MCP_REMOTE_MOBILE_APNS_ENABLED` | `False` | Enable optional best-effort APNs silent-push wake for native mobile workers. |
+| `remote_mobile_apns_team_id` | `LOCAL_SHELL_MCP_REMOTE_MOBILE_APNS_TEAM_ID` | `None` | Apple Developer Team ID used to sign APNs provider JWTs; redacted from diagnostics. |
+| `remote_mobile_apns_key_id` | `LOCAL_SHELL_MCP_REMOTE_MOBILE_APNS_KEY_ID` | `None` | APNs token-signing key ID; redacted from diagnostics. |
+| `remote_mobile_apns_key_path` | `LOCAL_SHELL_MCP_REMOTE_MOBILE_APNS_KEY_PATH` | `None` | Path to the APNs `.p8` provider key. Keep it outside the repository; redacted from diagnostics. |
+| `remote_mobile_apns_topic` | `LOCAL_SHELL_MCP_REMOTE_MOBILE_APNS_TOPIC` | `'com.xycdev.lsmmobileworker'` | APNs topic/bundle identifier for the native iOS worker. |
+| `remote_mobile_apns_min_wake_interval_s` | `LOCAL_SHELL_MCP_REMOTE_MOBILE_APNS_MIN_WAKE_INTERVAL_S` | `60` | Minimum interval between APNs wake requests for one worker. |
 
 ### Shell and executable paths
 

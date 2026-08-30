@@ -139,6 +139,112 @@ async def test_native_worker_can_opt_out_of_python_self_update(tmp_path, monkeyp
 
 
 @pytest.mark.asyncio
+async def test_mobile_push_registration_is_persisted_but_not_exposed(tmp_path, monkeypatch):
+    monkeypatch.setenv("LOCAL_SHELL_MCP_WORKSPACE_ROOT", str(tmp_path))
+    monkeypatch.setenv("LOCAL_SHELL_MCP_STATE_DIR", str(tmp_path / ".state"))
+    get_settings.cache_clear()
+    manager = remote.RemoteManager()
+    manager._registry_loaded = True
+    worker = remote.RemoteWorker("iphone", "token-ios", capabilities=["mobile", "mobile.background_wake"])
+    manager.workers[worker.name] = worker
+    manager.tokens[worker.token] = worker.name
+
+    result = await manager.register_push_token(
+        worker.token,
+        {"token": "ab" * 32, "environment": "development"},
+    )
+
+    assert result == {"registered": True, "environment": "development", "name": "iphone"}
+    assert worker.push_token == "ab" * 32
+    listed = manager.list_machines()["machines"][0]
+    assert listed["wake"]["registered"] is True
+    assert listed["wake"]["environment"] == "development"
+    assert "push_token" not in listed
+    assert "ab" * 32 not in repr(listed)
+
+    reloaded = remote.RemoteManager()
+    reloaded.list_machines()
+    restored = reloaded.workers["iphone"]
+    assert restored.push_token == "ab" * 32
+    assert restored.push_environment == "development"
+
+
+@pytest.mark.asyncio
+async def test_offline_mobile_call_can_queue_then_wake(tmp_path, monkeypatch):
+    monkeypatch.setenv("LOCAL_SHELL_MCP_WORKSPACE_ROOT", str(tmp_path))
+    monkeypatch.setenv("LOCAL_SHELL_MCP_STATE_DIR", str(tmp_path / ".state"))
+    get_settings.cache_clear()
+    manager = remote.RemoteManager()
+    manager._registry_loaded = True
+    worker = remote.RemoteWorker(
+        "iphone",
+        "token-ios",
+        last_seen=1,
+        status="offline",
+        capabilities=["mobile", "mobile.background_wake"],
+        push_token="ab" * 32,
+        push_environment="development",
+    )
+    manager.workers[worker.name] = worker
+    manager.tokens[worker.token] = worker.name
+    monkeypatch.setattr(remote, "_utc", lambda: 1000.0)
+    monkeypatch.setattr(manager, "_wake_is_configured", lambda value: value is worker)
+    wake_calls = []
+
+    async def fake_wake(value, reason="job"):
+        wake_calls.append((value.name, reason))
+        job = await value.queue.get()
+        await manager.submit_result(
+            value.token,
+            {"job_id": job["id"], "ok": True, "data": {"woke": True}},
+        )
+        return {"accepted": True}
+
+    monkeypatch.setattr(manager, "_send_worker_wake", fake_wake)
+
+    result = await manager.call("iphone", "mobile_action", {"action": "battery"}, timeout_s=5)
+
+    assert result["ok"] is True
+    assert result["data"] == {"woke": True}
+    assert wake_calls == [("iphone", "job")]
+
+
+@pytest.mark.asyncio
+async def test_offline_mobile_wake_failure_cancels_queued_job(tmp_path, monkeypatch):
+    monkeypatch.setenv("LOCAL_SHELL_MCP_WORKSPACE_ROOT", str(tmp_path))
+    monkeypatch.setenv("LOCAL_SHELL_MCP_STATE_DIR", str(tmp_path / ".state"))
+    get_settings.cache_clear()
+    manager = remote.RemoteManager()
+    manager._registry_loaded = True
+    worker = remote.RemoteWorker(
+        "iphone",
+        "token-ios",
+        last_seen=1,
+        status="offline",
+        capabilities=["mobile", "mobile.background_wake"],
+        push_token="ab" * 32,
+        push_environment="development",
+    )
+    manager.workers[worker.name] = worker
+    manager.tokens[worker.token] = worker.name
+    monkeypatch.setattr(remote, "_utc", lambda: 1000.0)
+    monkeypatch.setattr(manager, "_wake_is_configured", lambda value: value is worker)
+
+    async def fail_wake(value, reason="job"):  # noqa: ANN001, ARG001
+        raise RuntimeError("provider unavailable")
+
+    monkeypatch.setattr(manager, "_send_worker_wake", fail_wake)
+
+    with pytest.raises(RuntimeError, match="failed to wake remote machine"):
+        await manager.call("iphone", "mobile_action", {"action": "battery"}, timeout_s=5)
+
+    assert manager.pending == {}
+    assert manager.pending_machines == {}
+    polled = await manager.poll(worker.token, {"protocol_version": 2, "worker_version": remote.__version__})
+    assert polled["job"] is None
+
+
+@pytest.mark.asyncio
 async def test_poll_clamps_to_worker_timeout_and_returns_current_controller_value(
     tmp_path, monkeypatch
 ):

@@ -130,6 +130,14 @@ async def test_mcp_tool_surface_is_stable(tmp_path, monkeypatch):
     }
     assert model_visible == CORE_TOOL_NAMES | REMOTE_DEPENDENT_TOOL_NAMES
     assert tools["live_workspace_reconnect"].meta["ui"]["visibility"] == ["app"]
+    mobile_actions = set(tools["mobile_action"].inputSchema["properties"]["action"]["enum"])
+    assert {
+        "camera_capture",
+        "photos_list",
+        "photos_export",
+        "network_status",
+        "http_probe",
+    } <= mobile_actions
 
 
 @pytest.mark.asyncio

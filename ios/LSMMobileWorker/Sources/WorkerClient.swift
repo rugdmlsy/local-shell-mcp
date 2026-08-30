@@ -63,6 +63,16 @@ struct LSMHTTPClient {
         return settings(from: data)
     }
 
+    func registerPushToken(identity: WorkerIdentity, token: String, environment: String) async throws {
+        _ = try await post(
+            server: identity.server,
+            path: "/remote/push-token",
+            payload: ["token": token, "environment": environment],
+            token: identity.token,
+            timeout: 15
+        )
+    }
+
     func poll(identity: WorkerIdentity, pollTimeout: TimeInterval) async throws -> [String: Any] {
         let appVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.1.0"
         let payload: [String: Any] = [
@@ -210,6 +220,7 @@ final class WorkerViewModel: ObservableObject {
         connectionTask?.cancel()
         connectionTask = nil
         connected = false
+        WorkerStatusStore.recordConnected(false)
         status = "Disconnected"
         detail = "The app remains paired and will reconnect when requested."
     }
@@ -237,6 +248,16 @@ final class WorkerViewModel: ObservableObject {
         detail = "Location permission requested."
     }
 
+    func requestCameraPermission() async {
+        let granted = await executor.requestCameraPermission()
+        detail = granted ? "Camera permission granted." : "Camera permission was not granted."
+    }
+
+    func requestPhotoPermission() async {
+        let granted = await executor.requestPhotoPermission()
+        detail = granted ? "Photo Library permission granted." : "Photo Library permission was not granted."
+    }
+
     private func runConnectionLoop() async {
         defer {
             connectionTask = nil
@@ -257,11 +278,14 @@ final class WorkerViewModel: ObservableObject {
                 workerName = result.0.name
                 server = result.0.server
                 invite = ""
+                await WorkerBackgroundCoordinator.shared.syncPushRegistration(identity: result.0)
             } else if let identity {
                 sessionSettings = try await http.resume(identity: identity)
+                await WorkerBackgroundCoordinator.shared.syncPushRegistration(identity: identity)
             }
 
             connected = true
+            WorkerStatusStore.recordConnected(true)
             status = "Online"
             detail = "Connected to LSM controller. Keep the app active for continuous polling."
 
@@ -284,11 +308,13 @@ final class WorkerViewModel: ObservableObject {
                     }
                     retryDelay = 1
                     connected = true
+                    WorkerStatusStore.recordConnected(true)
                     status = "Online"
                 } catch is CancellationError {
                     return
                 } catch {
                     connected = false
+                    WorkerStatusStore.recordConnected(false)
                     status = "Reconnecting"
                     detail = error.localizedDescription
                     try? await Task.sleep(for: .seconds(Double(retryDelay)))
@@ -308,47 +334,13 @@ final class WorkerViewModel: ObservableObject {
     }
 
     private func handle(job: [String: Any], identity: WorkerIdentity) async throws {
-        guard let jobID = job["id"] as? String else { return }
-        if let expires = (job["expires_at"] as? NSNumber)?.doubleValue,
-           expires > 0,
-           expires < Date().timeIntervalSince1970 {
-            try await http.submit(identity: identity, payload: [
-                "job_id": jobID,
-                "ok": false,
-                "error": "TimeoutError",
-                "message": "remote job expired before execution",
-            ])
-            return
-        }
-
-        let tool = job["tool"] as? String ?? ""
-        let args = job["args"] as? [String: Any] ?? [:]
-        lastAction = (args["action"] as? String) ?? tool
-
-        let heartbeat = Task { [http, sessionSettings] in
-            while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(max(2, sessionSettings.heartbeatInterval)))
-                if Task.isCancelled { return }
-                _ = try? await http.heartbeat(identity: identity, jobID: jobID)
-            }
-        }
-        defer { heartbeat.cancel() }
-
-        do {
-            let result = try await executor.execute(tool: tool, args: args)
-            try await http.submit(identity: identity, payload: [
-                "job_id": jobID,
-                "ok": true,
-                "data": result,
-            ])
-        } catch {
-            try await http.submit(identity: identity, payload: [
-                "job_id": jobID,
-                "ok": false,
-                "error": String(describing: type(of: error)),
-                "message": error.localizedDescription,
-            ])
-        }
+        let runner = WorkerJobRunner(http: http, executor: executor)
+        try await runner.handle(
+            job: job,
+            identity: identity,
+            heartbeatInterval: sessionSettings.heartbeatInterval,
+            onAction: { [weak self] action in self?.lastAction = action }
+        )
     }
 
     private func persistIdentity(_ identity: WorkerIdentity) throws {

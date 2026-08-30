@@ -3412,11 +3412,16 @@ def _register_remote_admin_tools(mcp: FastMCP) -> None:
             "read_text",
             "write_text",
             "delete_file",
+            "camera_capture",
+            "photos_list",
+            "photos_export",
+            "network_status",
+            "http_probe",
         ],
         arguments: dict[str, Any] | None = None,
         timeout_s: int = 30,
     ) -> ToolResult:
-        """Run one native action on an LSM mobile worker. arguments are action-specific: notify={title,body}; open_url={url}; file actions use {path} plus text for write_text."""
+        """Run one native action on an LSM mobile worker. Permission-gated camera/photos actions never prompt remotely; http_probe is bounded; sandbox file actions stay under the app-managed LSM root."""
         try:
             manager = remote_manager()
             rows = manager.list_machines().get("machines", [])

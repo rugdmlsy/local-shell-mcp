@@ -28,30 +28,41 @@ final class MobileActionExecutor {
         }
     }
 
-    static let capabilities = [
-        "mobile",
-        "mobile.device_info",
-        "mobile.battery",
-        "mobile.notifications",
-        "mobile.location",
-        "mobile.open_url",
-        "mobile.files",
-    ]
+    static let capabilities: [String] = {
+        var values = [
+            "mobile",
+            "mobile.device_info",
+            "mobile.battery",
+            "mobile.notifications",
+            "mobile.location",
+            "mobile.open_url",
+            "mobile.files",
+            "mobile.file_transfer",
+            "mobile.background_refresh",
+            "mobile.camera",
+            "mobile.photos",
+            "mobile.network",
+        ]
+        #if LSM_PUSH_NOTIFICATIONS
+        values.append("mobile.background_wake")
+        #endif
+        return values
+    }()
 
     private let locationProvider = LocationProvider()
+    private let mediaProvider = MobileMediaProvider()
+    private let networkProvider = MobileNetworkProvider()
+    private let transferExecutor = MobileTransferExecutor()
     private let fileManager = FileManager.default
     private let maxReadBytes = 512 * 1024
     private let maxWriteBytes = 5 * 1024 * 1024
 
     init() {
         UIDevice.current.isBatteryMonitoringEnabled = true
-        try? fileManager.createDirectory(at: Self.filesRoot, withIntermediateDirectories: true)
+        try? MobileFileStore.ensureRoot()
     }
 
-    static var filesRoot: URL {
-        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("LSM", isDirectory: true)
-    }
+    static var filesRoot: URL { MobileFileStore.root }
 
     static func workerInfo() -> [String: Any] {
         let process = ProcessInfo.processInfo
@@ -89,9 +100,17 @@ final class MobileActionExecutor {
         locationProvider.requestPermission()
     }
 
-    func execute(tool: String, args: [String: Any]) async throws -> Any {
-        guard tool == "mobile_action" else {
-            throw ActionError.unsupportedTool(tool)
+    func requestCameraPermission() async -> Bool {
+        await mediaProvider.requestCameraPermission()
+    }
+
+    func requestPhotoPermission() async -> Bool {
+        await mediaProvider.requestPhotoPermission()
+    }
+
+    func execute(tool: String, args: [String: Any], controllerServer: String) async throws -> Any {
+        if tool != "mobile_action" {
+            return try await transferExecutor.execute(tool: tool, args: args, controllerServer: controllerServer)
         }
         guard let action = args["action"] as? String else {
             throw ActionError.missingArgument("action")
@@ -119,6 +138,16 @@ final class MobileActionExecutor {
             return try writeText(arguments)
         case "delete_file":
             return try deleteFile(arguments)
+        case "camera_capture":
+            return try await mediaProvider.capture(arguments)
+        case "photos_list":
+            return try mediaProvider.listPhotos(arguments)
+        case "photos_export":
+            return try await mediaProvider.exportPhoto(arguments)
+        case "network_status":
+            return networkProvider.status()
+        case "http_probe":
+            return try await networkProvider.httpProbe(arguments)
         default:
             throw ActionError.unsupportedAction(action)
         }
@@ -126,13 +155,18 @@ final class MobileActionExecutor {
 
     private func capabilityInfo() async -> [String: Any] {
         let notificationSettings = await UNUserNotificationCenter.current().notificationSettings()
+        var permissions: [String: String] = [
+            "notifications": notificationAuthorizationName(notificationSettings.authorizationStatus),
+            "location": locationProvider.authorizationStatusName(),
+        ]
+        for (key, value) in mediaProvider.permissionInfo() {
+            permissions[key] = value
+        }
         return [
             "capabilities": Self.capabilities,
             "files_root": "Documents/LSM",
-            "permissions": [
-                "notifications": notificationAuthorizationName(notificationSettings.authorizationStatus),
-                "location": locationProvider.authorizationStatusName(),
-            ],
+            "permissions": permissions,
+            "background_wake": PushRegistrationStore.status(),
         ]
     }
 

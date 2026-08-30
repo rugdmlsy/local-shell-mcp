@@ -3,12 +3,16 @@ options:
   bundleIdPrefix: com.xycdev
   deploymentTarget:
     iOS: "18.0"
+configs:
+  Debug: debug
+  Release: release
+  PushDebug: debug
 settings:
   base:
     SWIFT_VERSION: "5.0"
     SWIFT_STRICT_CONCURRENCY: minimal
     CURRENT_PROJECT_VERSION: 1
-    MARKETING_VERSION: 0.1.0
+    MARKETING_VERSION: 0.2.0
 targets:
   LSMMobileWorker:
     type: application
@@ -22,11 +26,25 @@ targets:
         CODE_SIGN_STYLE: Automatic
         TARGETED_DEVICE_FAMILY: "1,2"
         SUPPORTS_MACCATALYST: NO
+        SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited)"
+      configs:
+        PushDebug:
+          CODE_SIGN_ENTITLEMENTS: Sources/LSMMobileWorker.entitlements
+          SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) DEBUG LSM_PUSH_NOTIFICATIONS"
     info:
       path: Sources/Info.plist
       properties:
         CFBundleDisplayName: "LSM Worker"
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
         NSLocationWhenInUseUsageDescription: "LSM Worker uses your location only when you explicitly allow a remote location action."
+        NSCameraUsageDescription: "LSM Worker captures a still image only after you grant camera access and while the app is in the foreground."
+        NSPhotoLibraryUsageDescription: "LSM Worker lists or exports photos only after you explicitly grant Photo Library access."
+        BGTaskSchedulerPermittedIdentifiers:
+          - com.xycdev.lsmmobileworker.refresh
+        UIBackgroundModes:
+          - fetch
+          - remote-notification
         UIFileSharingEnabled: true
         LSSupportsOpeningDocumentsInPlace: true
         UILaunchScreen: {}

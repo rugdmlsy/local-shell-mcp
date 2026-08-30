@@ -76,6 +76,7 @@ _POSITIVE_INTEGER_SETTINGS = (
     "remote_job_timeout_s",
     "remote_peer_transfer_timeout_s",
     "remote_transfer_s3_presign_ttl_s",
+    "remote_mobile_apns_min_wake_interval_s",
     "remote_max_pending_jobs",
     "remote_cancelled_job_ttl_s",
     "container_client_invite_ttl_s",
@@ -282,6 +283,9 @@ SENSITIVE_SETTING_KEYS = {
     "cf_access_allowed_email_domains",
     "oauth_admin_pin",
     "oauth_jwt_secret",
+    "remote_mobile_apns_team_id",
+    "remote_mobile_apns_key_id",
+    "remote_mobile_apns_key_path",
     "state_backend_url",
 }
 
@@ -425,6 +429,13 @@ if _PYDANTIC_AVAILABLE:
         remote_transfer_s3_region: str | None = None
         remote_transfer_s3_endpoint_url: str | None = None
         remote_transfer_s3_presign_ttl_s: int = 3600
+        # Optional APNs provider for best-effort native iOS worker wakeups.
+        remote_mobile_apns_enabled: bool = False
+        remote_mobile_apns_team_id: str | None = None
+        remote_mobile_apns_key_id: str | None = None
+        remote_mobile_apns_key_path: str | None = None
+        remote_mobile_apns_topic: str = "com.xycdev.lsmmobileworker"
+        remote_mobile_apns_min_wake_interval_s: int = 60
 
         # Persistent JSON-only clients bootstrap with a short-lived invitation,
         # then keep only an owner-readable bearer configuration on the client.
@@ -660,6 +671,12 @@ else:
         remote_transfer_s3_region: str | None = None
         remote_transfer_s3_endpoint_url: str | None = None
         remote_transfer_s3_presign_ttl_s: int = 3600
+        remote_mobile_apns_enabled: bool = False
+        remote_mobile_apns_team_id: str | None = None
+        remote_mobile_apns_key_id: str | None = None
+        remote_mobile_apns_key_path: str | None = None
+        remote_mobile_apns_topic: str = "com.xycdev.lsmmobileworker"
+        remote_mobile_apns_min_wake_interval_s: int = 60
 
         container_client_invite_ttl_s: int = 600
         container_client_token_ttl_s: int = 86_400

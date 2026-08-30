@@ -133,7 +133,7 @@ class FakeRemoteManager:
         return {"name": name, "workdir": workdir, "ttl_s": ttl_s}
 
     def list_machines(self):
-        return {"machines": [{"name": "node"}]}
+        return {"machines": [{"name": "node", "capabilities": ["mobile", "mobile.battery"]}]}
 
     def revoke(self, machine):
         return {"machine": machine, "revoked": True}
@@ -269,6 +269,7 @@ async def test_all_public_tool_wrappers_local_and_remote(tmp_path, monkeypatch):
         "restart": {"purpose": "test"},
         "restart_status": {},
         "audit_tail": {},
+        "mobile_action": {"machine": "node", "action": "battery"},
         "remote_manage": {"action": "list"},
     }
     assert set(local_cases) == set(mcp._tool_manager._tools)
@@ -327,7 +328,8 @@ async def test_all_public_tool_wrappers_local_and_remote(tmp_path, monkeypatch):
     for name, kwargs in remote_cases.items():
         result = await _raw_tool(mcp, name)(**kwargs, machine="node")
         assert result["ok"] is True, name
-    assert len(fake_remote.calls) == len(remote_cases) - 1
+    assert len(fake_remote.calls) == len(remote_cases)
+    assert any(tool == "mobile_action" for _, tool, _, _ in fake_remote.calls)
     assert all(tool != "view_image" for _, tool, _, _ in fake_remote.calls)
 
 
@@ -410,6 +412,7 @@ async def test_tool_wrapper_error_paths_and_remote_disabled(tmp_path, monkeypatc
     _configure(tmp_path, monkeypatch, remote_enabled=False)
     disabled = tools.build_mcp()
     assert not any(name.startswith("remote_") for name in disabled._tool_manager._tools)
+    assert "mobile_action" not in disabled._tool_manager._tools
 
 
 def test_tool_helpers_audit_serialization_timeout_and_tail(tmp_path, monkeypatch):
