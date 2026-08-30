@@ -72,6 +72,16 @@ test "${actual_sha}" = "${expected_sha}" || {
   exit 1
 }
 test -f "${stage_dir}/uv.lock"
+readonly project_version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' "${stage_dir}/pyproject.toml" | head -n 1)"
+readonly runtime_version="$(sed -n 's/^__version__ = "\([^"]*\)"/\1/p' "${stage_dir}/src/local_shell_mcp/__init__.py" | head -n 1)"
+test -n "${project_version}" && test -n "${runtime_version}" || {
+  echo "release version metadata is incomplete" >&2
+  exit 1
+}
+test "${project_version}" = "${runtime_version}" || {
+  echo "runtime version ${runtime_version} does not match project version ${project_version}" >&2
+  exit 1
+}
 
 mv "${stage_dir}" "${release_dir}"
 stage_dir=""

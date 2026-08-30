@@ -1,3 +1,6 @@
+import tomllib
+from pathlib import Path
+
 from fastapi.testclient import TestClient
 
 from local_shell_mcp import __version__
@@ -5,6 +8,12 @@ from local_shell_mcp.http_app import build_http_app
 from local_shell_mcp.main import main
 from local_shell_mcp.settings import get_settings
 from local_shell_mcp.version import format_version_info, version_info
+
+
+def test_runtime_version_matches_project_metadata():
+    project = tomllib.loads((Path(__file__).parents[1] / "pyproject.toml").read_text(encoding="utf-8"))
+
+    assert project["project"]["version"] == __version__
 
 
 def test_version_info_reports_package_metadata():

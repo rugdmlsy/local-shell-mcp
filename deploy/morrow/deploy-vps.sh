@@ -117,6 +117,15 @@ test "${commit_sha}" = "${remote_branch_sha}" || {
 }
 
 readonly version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' pyproject.toml | head -n 1)"
+readonly runtime_version="$(sed -n 's/^__version__ = "\([^"]*\)"/\1/p' src/local_shell_mcp/__init__.py | head -n 1)"
+test -n "${runtime_version}" || {
+  echo "runtime version is missing from src/local_shell_mcp/__init__.py" >&2
+  exit 1
+}
+test "${runtime_version}" = "${version}" || {
+  echo "runtime version ${runtime_version} does not match project version ${version}" >&2
+  exit 1
+}
 if [[ "${version}" =~ ^([0-9]+\.[0-9]+\.[0-9]+)\+morrow\.([0-9]+)$ ]]; then
   readonly release_tag="morrow-v${BASH_REMATCH[1]}-${BASH_REMATCH[2]}"
 else
