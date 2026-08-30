@@ -15,6 +15,12 @@ workspaces/
 playwright-report/
 test-results/
 node_modules/
+.tmp/
+
+# XcodeGen output and per-user Xcode state
+ios/LSMMobileWorker/LSMMobileWorker.xcodeproj/
+ios/LSMMobileWorker/Sources/Info.plist
+**/xcuserdata/
 # VS Code extension local build outputs
 vscode-extension/node_modules/
 vscode-extension/out/

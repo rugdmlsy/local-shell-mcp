@@ -83,7 +83,8 @@ GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
             "browser_run_script",
         ),
     ),
-    ("Remote worker administration", ("remote_manage",)),
+    ("Maintenance", ("restart", "restart_status")),
+    ("Remote workers and mobile devices", ("remote_manage", "mobile_action")),
 )
 
 
@@ -146,6 +147,7 @@ async def generate() -> str:
         "| Run an interactive or long task | `shell_start` or `job_start` |",
         "| Make exact file changes | `file_edit` or `file_patch` |",
         "| Transfer a file or directory | `remote_transfer` |",
+        "| Use an iPhone/iPad native capability | `mobile_action` |",
         "| Discover an external MCP capability | `mcp_tool_search`, then `mcp_tool_inspect` |",
         "| Interact with a page | `browser_session`, `browser_snapshot`, then `browser_act` |",
         "| Run custom browser logic | `browser_run_script` |",
@@ -160,7 +162,10 @@ async def generate() -> str:
             schema = tool.inputSchema or {}
             properties = schema.get("properties", {})
             required = set(schema.get("required", []))
-            lines.extend([f"### `{name}`", "", tool.description or "", ""])
+            description = "\n".join(
+                line.rstrip() for line in (tool.description or "").splitlines()
+            ).strip()
+            lines.extend([f"### `{name}`", "", description, ""])
             if properties:
                 lines.extend(
                     [

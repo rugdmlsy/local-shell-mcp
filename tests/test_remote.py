@@ -114,6 +114,31 @@ async def test_poll_requires_upgrade_before_dequeuing_jobs(tmp_path, monkeypatch
 
 
 @pytest.mark.asyncio
+async def test_native_worker_can_opt_out_of_python_self_update(tmp_path, monkeypatch):
+    monkeypatch.setenv("LOCAL_SHELL_MCP_WORKSPACE_ROOT", str(tmp_path))
+    monkeypatch.setenv("LOCAL_SHELL_MCP_STATE_DIR", str(tmp_path / ".state"))
+    get_settings.cache_clear()
+    manager = remote.RemoteManager()
+    worker = remote.RemoteWorker("iphone", "token-ios")
+    manager.workers[worker.name] = worker
+    manager.tokens[worker.token] = worker.name
+    worker.queue.put_nowait({"id": "job-mobile", "tool": "mobile_action", "args": {}})
+
+    result = await manager.poll(
+        worker.token,
+        {
+            "protocol_version": remote.REMOTE_WORKER_POLL_PROTOCOL_VERSION,
+            "worker_version": "1.0.0-ios",
+            "supports_self_update": False,
+        },
+    )
+
+    assert result["job"]["id"] == "job-mobile"
+    assert result["upgrade"] == {"required": False, "version": remote.__version__}
+    assert worker.info["supports_self_update"] is False
+
+
+@pytest.mark.asyncio
 async def test_poll_clamps_to_worker_timeout_and_returns_current_controller_value(
     tmp_path, monkeypatch
 ):

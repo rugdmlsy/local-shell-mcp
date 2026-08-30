@@ -675,6 +675,7 @@ class RemoteManager:
         payload = payload or {}
         worker_version = str(payload.get("worker_version") or "")
         protocol_version = int(payload.get("protocol_version") or 0)
+        supports_self_update = bool(payload.get("supports_self_update", True))
         configured_poll_timeout_s = float(get_settings().remote_poll_timeout_s)
         effective_poll_timeout_s = configured_poll_timeout_s
         try:
@@ -686,11 +687,11 @@ class RemoteManager:
         upgrade = None
         if protocol_version >= REMOTE_WORKER_POLL_PROTOCOL_VERSION:
             upgrade = {
-                "required": worker_version != __version__,
+                "required": supports_self_update and worker_version != __version__,
                 "version": __version__,
             }
         elif protocol_version > 0:
-            upgrade = {"required": True, "version": __version__}
+            upgrade = {"required": supports_self_update, "version": __version__}
         with self._state_lock:
             worker.status = "online"
             worker.last_seen = _utc()
@@ -701,6 +702,7 @@ class RemoteManager:
                 worker.info["lsm_version"] = worker_version
             if protocol_version:
                 worker.info["poll_protocol_version"] = protocol_version
+            worker.info["supports_self_update"] = supports_self_update
         if upgrade and upgrade["required"]:
             return {
                 "job": None,

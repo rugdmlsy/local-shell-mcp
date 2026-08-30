@@ -14,6 +14,7 @@ Most tools return a structured `ToolResult` containing `ok`, `message`, and `dat
 | Run an interactive or long task | `shell_start` or `job_start` |
 | Make exact file changes | `file_edit` or `file_patch` |
 | Transfer a file or directory | `remote_transfer` |
+| Use an iPhone/iPad native capability | `mobile_action` |
 | Discover an external MCP capability | `mcp_tool_search`, then `mcp_tool_inspect` |
 | Interact with a page | `browser_session`, `browser_snapshot`, then `browser_act` |
 | Run custom browser logic | `browser_run_script` |
@@ -260,11 +261,19 @@ When `machine` is supplied, the call additionally requires `remote:use` and runs
 
 Start a tracked long-running job locally or on a remote machine.
 
+        ``notify_on_finish`` is opt-in metadata for completion notification
+        consumers; it defaults to ``False``. ``notify_title`` supplies a human
+        title and ``notify_summary_path`` may point to a task-produced JSON
+        summary document for richer completion messages.
+
 | Parameter | Type | Required/default | Description |
 |---|---|---|---|
 | `command` | `string` | required |  |
 | `cwd` | `string` | `"."` |  |
 | `name` | `string \| null` | `null` |  |
+| `notify_on_finish` | `boolean` | `false` |  |
+| `notify_title` | `string \| null` | `null` |  |
+| `notify_summary_path` | `string \| null` | `null` |  |
 | `purpose` | `string \| null` | `null` |  |
 | `explanation` | `string \| null` | `null` |  |
 | `machine` | `string \| null` | `null` |  |
@@ -321,9 +330,16 @@ When `machine` is supplied, the call additionally requires `remote:use` and runs
 
 Restart a stopped or exited tracked local or remote job.
 
+        Notification metadata defaults to the job's existing values. Pass
+        ``notify_on_finish`` to toggle delivery or non-null title/summary-path
+        values to replace the existing completion-message metadata.
+
 | Parameter | Type | Required/default | Description |
 |---|---|---|---|
 | `job_id` | `string` | required |  |
+| `notify_on_finish` | `boolean \| null` | `null` |  |
+| `notify_title` | `string \| null` | `null` |  |
+| `notify_summary_path` | `string \| null` | `null` |  |
 | `purpose` | `string \| null` | `null` |  |
 | `explanation` | `string \| null` | `null` |  |
 | `machine` | `string \| null` | `null` |  |
@@ -436,13 +452,14 @@ When `machine` is supplied, the call additionally requires `remote:use` and runs
 
 ### `file_write`
 
-Write a UTF-8 text file locally or on a remote machine.
+Write a UTF-8 text file or base64-encoded binary file locally or remotely.
 
 | Parameter | Type | Required/default | Description |
 |---|---|---|---|
 | `path` | `string` | required |  |
 | `content` | `string` | required |  |
 | `overwrite` | `boolean` | `true` |  |
+| `encoding` | `string` | `"utf-8"` |  |
 | `purpose` | `string \| null` | `null` |  |
 | `explanation` | `string \| null` | `null` |  |
 | `machine` | `string \| null` | `null` |  |
@@ -702,7 +719,41 @@ OAuth scopes: `shell:read, shell:write, shell:execute, browser:use, file:share, 
 
 When `machine` is supplied, the call additionally requires `remote:use` and runs through the remote worker protocol.
 
-## Remote worker administration
+## Maintenance
+
+### `restart`
+
+Safely restart the controller or one remote worker through a one-shot supervisor.
+
+| Parameter | Type | Required/default | Description |
+|---|---|---|---|
+| `machine` | `string \| null` | `null` |  |
+| `delay_s` | `integer` | `8` |  |
+| `health_timeout_s` | `integer` | `30` |  |
+| `reason` | `string \| null` | `null` |  |
+| `purpose` | `string \| null` | `null` |  |
+| `explanation` | `string \| null` | `null` |  |
+| `logical_session_id` | `string \| null` | required | Logical Session for this tool call. Pass the session_id returned by session_manage while working in that task. Use null only when no Logical Session is active. This is the same durable session_id used by session_manage. |
+
+OAuth scopes: `shell:read, shell:write, shell:execute, browser:use, file:share, remote:use`.
+
+When `machine` is supplied, the call additionally requires `remote:use` and runs through the remote worker protocol.
+
+### `restart_status`
+
+Return the latest restart record, or one restart by id.
+
+| Parameter | Type | Required/default | Description |
+|---|---|---|---|
+| `restart_id` | `string \| null` | `null` |  |
+| `machine` | `string \| null` | `null` |  |
+| `logical_session_id` | `string \| null` | required | Logical Session for this tool call. Pass the session_id returned by session_manage while working in that task. Use null only when no Logical Session is active. This is the same durable session_id used by session_manage. |
+
+OAuth scopes: `shell:read, shell:write, shell:execute, browser:use, file:share, remote:use`.
+
+When `machine` is supplied, the call additionally requires `remote:use` and runs through the remote worker protocol.
+
+## Remote workers and mobile devices
 
 ### `remote_manage`
 
@@ -716,6 +767,22 @@ Manage remote workers with action=invite, list, revoke, or rename. invite accept
 | `ttl_s` | `integer \| null` | `null` |  |
 | `machine` | `string \| null` | `null` |  |
 | `new_name` | `string \| null` | `null` |  |
+| `logical_session_id` | `string \| null` | required | Logical Session for this tool call. Pass the session_id returned by session_manage while working in that task. Use null only when no Logical Session is active. This is the same durable session_id used by session_manage. |
+
+OAuth scopes: `shell:read, shell:write, shell:execute, browser:use, file:share, remote:use`.
+
+When `machine` is supplied, the call additionally requires `remote:use` and runs through the remote worker protocol.
+
+### `mobile_action`
+
+Run one native action on an LSM mobile worker. arguments are action-specific: notify={title,body}; open_url={url}; file actions use {path} plus text for write_text.
+
+| Parameter | Type | Required/default | Description |
+|---|---|---|---|
+| `machine` | `string` | required |  |
+| `action` | `string` | required |  |
+| `arguments` | `object \| null` | `null` |  |
+| `timeout_s` | `integer` | `30` |  |
 | `logical_session_id` | `string \| null` | required | Logical Session for this tool call. Pass the session_id returned by session_manage while working in that task. Use null only when no Logical Session is active. This is the same durable session_id used by session_manage. |
 
 OAuth scopes: `shell:read, shell:write, shell:execute, browser:use, file:share, remote:use`.

@@ -1,5 +1,6 @@
 import pytest
 
+import local_shell_mcp.tools as tools_module
 from local_shell_mcp.settings import get_settings
 from local_shell_mcp.tools import build_mcp
 
@@ -55,6 +56,7 @@ APP_ONLY_TOOL_NAMES = {
 }
 
 REMOTE_DEPENDENT_TOOL_NAMES = {
+    "mobile_action",
     "remote_manage",
     "remote_transfer",
 }
@@ -128,6 +130,31 @@ async def test_mcp_tool_surface_is_stable(tmp_path, monkeypatch):
     }
     assert model_visible == CORE_TOOL_NAMES | REMOTE_DEPENDENT_TOOL_NAMES
     assert tools["live_workspace_reconnect"].meta["ui"]["visibility"] == ["app"]
+
+
+@pytest.mark.asyncio
+async def test_mobile_action_requires_mobile_worker_capability(tmp_path, monkeypatch):
+    monkeypatch.setenv("LOCAL_SHELL_MCP_WORKSPACE_ROOT", str(tmp_path))
+    monkeypatch.setenv("LOCAL_SHELL_MCP_REMOTE_ENABLED", "true")
+    get_settings.cache_clear()
+
+    class DesktopOnlyManager:
+        def list_machines(self):
+            return {"machines": [{"name": "desktop", "capabilities": ["shell", "files"]}]}
+
+        async def call(self, *args, **kwargs):  # noqa: ANN002, ANN003
+            raise AssertionError("mobile_action must not dispatch to a non-mobile worker")
+
+    monkeypatch.setattr(tools_module, "remote_manager", lambda: DesktopOnlyManager())
+
+    result = await build_mcp().call_tool(
+        "mobile_action",
+        {"machine": "desktop", "action": "battery", "timeout_s": 30},
+    )
+
+    assert result.isError is True
+    assert result.structuredContent["ok"] is False
+    assert "not a mobile worker" in result.structuredContent["message"]
 
 
 @pytest.mark.asyncio

@@ -1179,7 +1179,7 @@ def _remove_remote_tools_when_disabled(mcp: FastMCP) -> None:
         return
     tools = mcp._tool_manager._tools  # noqa: SLF001
     for name in list(tools):
-        if name.startswith("remote_"):
+        if name.startswith("remote_") or name == "mobile_action":
             tools.pop(name, None)
 
 
@@ -3391,6 +3391,50 @@ def _register_browser_tools(mcp: FastMCP, settings: Any, read_only_tool: ToolAnn
 
 def _register_remote_admin_tools(mcp: FastMCP) -> None:
     remote_meta = _oauth_meta(["remote:use"])
+    mobile_annotations = ToolAnnotations(
+        readOnlyHint=False,
+        destructiveHint=True,
+        idempotentHint=False,
+        openWorldHint=True,
+    )
+
+    @mcp.tool(structured_output=True, annotations=mobile_annotations, meta=remote_meta)
+    async def mobile_action(
+        machine: str,
+        action: Literal[
+            "capabilities",
+            "device_info",
+            "battery",
+            "notify",
+            "location",
+            "open_url",
+            "list_files",
+            "read_text",
+            "write_text",
+            "delete_file",
+        ],
+        arguments: dict[str, Any] | None = None,
+        timeout_s: int = 30,
+    ) -> ToolResult:
+        """Run one native action on an LSM mobile worker. arguments are action-specific: notify={title,body}; open_url={url}; file actions use {path} plus text for write_text."""
+        try:
+            manager = remote_manager()
+            rows = manager.list_machines().get("machines", [])
+            worker = next((row for row in rows if row.get("name") == machine), None)
+            if worker is None:
+                raise ValueError(f"unknown remote machine: {machine}")
+            capabilities = set(worker.get("capabilities") or [])
+            if "mobile" not in capabilities:
+                raise ValueError(f"remote machine is not a mobile worker: {machine}")
+            return await _remote_call(
+                get_settings(),
+                machine,
+                "mobile_action",
+                {"action": action, "arguments": arguments or {}},
+                timeout_s,
+            )
+        except Exception as exc:
+            return _handled_error(exc)
 
     @mcp.tool(structured_output=True, meta=remote_meta)
     async def remote_manage(
