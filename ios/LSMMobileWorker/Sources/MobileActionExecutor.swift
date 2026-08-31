@@ -42,9 +42,15 @@ final class MobileActionExecutor {
             "mobile.camera",
             "mobile.photos",
             "mobile.network",
+            "mobile.approval",
+            "mobile.external_files",
+            "mobile.clipboard",
         ]
         #if LSM_PUSH_NOTIFICATIONS
         values.append("mobile.background_wake")
+        #endif
+        #if LSM_SHARE_EXTENSION
+        values.append("mobile.share_extension")
         #endif
         return values
     }()
@@ -53,6 +59,8 @@ final class MobileActionExecutor {
     private let mediaProvider = MobileMediaProvider()
     private let networkProvider = MobileNetworkProvider()
     private let transferExecutor = MobileTransferExecutor()
+    private let externalFiles = ExternalFileAccessManager.shared
+    private let clipboard = MobileClipboardProvider.shared
     private let fileManager = FileManager.default
     private let maxReadBytes = 512 * 1024
     private let maxWriteBytes = 5 * 1024 * 1024
@@ -146,8 +154,40 @@ final class MobileActionExecutor {
             return try await mediaProvider.exportPhoto(arguments)
         case "network_status":
             return networkProvider.status()
+        case "network_history":
+            return networkProvider.historyInfo()
+        case "dns_probe":
+            return try await networkProvider.dnsProbe(arguments)
+        case "tcp_probe":
+            return try await networkProvider.tcpProbe(arguments)
+        case "tls_probe":
+            return try await networkProvider.tlsProbe(arguments)
         case "http_probe":
             return try await networkProvider.httpProbe(arguments)
+        case "bookmarks_list":
+            return externalFiles.list()
+        case "bookmark_import":
+            return try externalFiles.importToSandbox(arguments)
+        case "bookmark_export":
+            return try externalFiles.exportFromSandbox(arguments)
+        case "clipboard_status":
+            return clipboard.status()
+        case "clipboard_write":
+            return try clipboard.write(arguments)
+        case "clipboard_read":
+            return try clipboard.read()
+        #if LSM_SHARE_EXTENSION
+        case "shared_inbox_import":
+            return try SharedInboxImporter.shared.importPending()
+        #endif
+        case "approval_prompt":
+            let decision = try await ApprovalPromptCoordinator.shared.prompt(arguments)
+            return [
+                "request_id": decision.requestID,
+                "approved": decision.approved,
+                "decision": decision.approved ? "approved" : "rejected",
+                "responded_at": ISO8601DateFormatter().string(from: decision.respondedAt),
+            ]
         default:
             throw ActionError.unsupportedAction(action)
         }
@@ -162,12 +202,18 @@ final class MobileActionExecutor {
         for (key, value) in mediaProvider.permissionInfo() {
             permissions[key] = value
         }
-        return [
+        var result: [String: Any] = [
             "capabilities": Self.capabilities,
             "files_root": "Documents/LSM",
             "permissions": permissions,
             "background_wake": PushRegistrationStore.status(),
+            "external_files": externalFiles.list(),
+            "clipboard": clipboard.status(),
         ]
+        #if LSM_SHARE_EXTENSION
+        result["share_inbox_pending"] = SharedInboxImporter.shared.pendingCount()
+        #endif
+        return result
     }
 
     private func batteryInfo() -> [String: Any] {

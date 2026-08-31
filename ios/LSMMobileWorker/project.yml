@@ -12,13 +12,18 @@ settings:
     SWIFT_VERSION: "5.0"
     SWIFT_STRICT_CONCURRENCY: minimal
     CURRENT_PROJECT_VERSION: 1
-    MARKETING_VERSION: 0.2.1
+    MARKETING_VERSION: 0.3.0
+
 targets:
   LSMMobileWorker:
     type: application
     platform: iOS
     sources:
-      - Sources
+      - path: Sources
+        excludes:
+          - Info.plist
+          - Info-Share.plist
+      - Shared
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.xycdev.lsmmobileworker
@@ -58,3 +63,93 @@ targets:
           - UIInterfaceOrientationPortraitUpsideDown
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
+
+  LSMMobileWorkerWithShare:
+    type: application
+    platform: iOS
+    sources:
+      - path: Sources
+        excludes:
+          - Info.plist
+          - Info-Share.plist
+      - Shared
+    dependencies:
+      - target: LSMShareExtension
+        embed: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.xycdev.lsmmobileworker
+        PRODUCT_NAME: "LSM Worker Share"
+        CODE_SIGN_STYLE: Automatic
+        CODE_SIGN_ENTITLEMENTS: Sources/LSMMobileWorkerShare.entitlements
+        TARGETED_DEVICE_FAMILY: "1,2"
+        SUPPORTS_MACCATALYST: NO
+        SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) LSM_SHARE_EXTENSION"
+      configs:
+        PushDebug:
+          CODE_SIGN_ENTITLEMENTS: Sources/LSMMobileWorkerSharePush.entitlements
+          SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) DEBUG LSM_SHARE_EXTENSION LSM_PUSH_NOTIFICATIONS"
+    info:
+      path: Sources/Info-Share.plist
+      properties:
+        CFBundleDisplayName: "LSM Worker"
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        CFBundleURLTypes:
+          - CFBundleURLName: com.xycdev.lsmmobileworker.share-import
+            CFBundleURLSchemes:
+              - lsmworker
+        NSLocationWhenInUseUsageDescription: "LSM Worker uses your location only when you explicitly allow a remote location action."
+        NSCameraUsageDescription: "LSM Worker captures a still image only after you grant camera access and while the app is in the foreground."
+        NSPhotoLibraryUsageDescription: "LSM Worker lists or exports photos only after you explicitly grant Photo Library access."
+        BGTaskSchedulerPermittedIdentifiers:
+          - com.xycdev.lsmmobileworker.refresh
+        UIBackgroundModes:
+          - fetch
+          - remote-notification
+        UIFileSharingEnabled: true
+        LSSupportsOpeningDocumentsInPlace: true
+        UILaunchScreen: {}
+        UIApplicationSupportsIndirectInputEvents: true
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+
+  LSMShareExtension:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: ShareExtension
+        excludes:
+          - Info.plist
+      - Shared
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.xycdev.lsmmobileworker.share
+        PRODUCT_NAME: "LSM Share"
+        CODE_SIGN_STYLE: Automatic
+        CODE_SIGN_ENTITLEMENTS: ShareExtension/LSMShareExtension.entitlements
+        APPLICATION_EXTENSION_API_ONLY: YES
+        TARGETED_DEVICE_FAMILY: "1,2"
+        SKIP_INSTALL: YES
+    info:
+      path: ShareExtension/Info.plist
+      properties:
+        CFBundleDisplayName: "Send to LSM"
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.share-services
+          NSExtensionPrincipalClass: "$(PRODUCT_MODULE_NAME).ShareViewController"
+          NSExtensionAttributes:
+            NSExtensionActivationRule:
+              NSExtensionActivationSupportsFileWithMaxCount: 10
+              NSExtensionActivationSupportsImageWithMaxCount: 10
+              NSExtensionActivationSupportsText: true
+              NSExtensionActivationSupportsWebURLWithMaxCount: 10

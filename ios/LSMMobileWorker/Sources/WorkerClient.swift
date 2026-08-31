@@ -195,13 +195,21 @@ final class WorkerViewModel: ObservableObject {
     }
 
     func startIfConfigured() {
+        #if LSM_SHARE_EXTENSION
+        importSharedInbox()
+        #endif
         guard paired, connectionTask == nil else { return }
         connect()
     }
 
     func handleScenePhase(_ phase: ScenePhase) {
-        if phase == .active, paired, connectionTask == nil {
-            connect()
+        if phase == .active {
+            #if LSM_SHARE_EXTENSION
+            importSharedInbox()
+            #endif
+            if paired, connectionTask == nil {
+                connect()
+            }
         }
     }
 
@@ -257,6 +265,20 @@ final class WorkerViewModel: ObservableObject {
         let granted = await executor.requestPhotoPermission()
         detail = granted ? "Photo Library permission granted." : "Photo Library permission was not granted."
     }
+
+    #if LSM_SHARE_EXTENSION
+    func importSharedInbox() {
+        do {
+            let result = try SharedInboxImporter.shared.importPending()
+            let count = result["imported_count"] as? Int ?? 0
+            if count > 0 {
+                detail = "Imported \(count) shared package(s) into Documents/LSM/Shared."
+            }
+        } catch {
+            detail = "Share import failed: \(error.localizedDescription)"
+        }
+    }
+    #endif
 
     private func runConnectionLoop() async {
         defer {

@@ -30,25 +30,42 @@ struct WorkerJobRunner {
         WorkerStatusStore.recordAction(action)
         onAction?(action)
 
-        let heartbeat = Task { [http] in
-            while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(max(2, heartbeatInterval)))
-                if Task.isCancelled { return }
-                _ = try? await http.heartbeat(identity: identity, jobID: jobID)
-            }
-        }
-        defer { heartbeat.cancel() }
-
-        do {
-            let result = try await executor.execute(
+        let work = Task<Any, Error> {
+            try await executor.execute(
                 tool: tool,
                 args: args,
                 controllerServer: identity.server
             )
+        }
+        let heartbeat = Task { [http] in
+            while !Task.isCancelled && !work.isCancelled {
+                try? await Task.sleep(for: .seconds(max(2, heartbeatInterval)))
+                if Task.isCancelled || work.isCancelled { return }
+                if let response = try? await http.heartbeat(identity: identity, jobID: jobID),
+                   response["cancelled"] as? Bool == true {
+                    work.cancel()
+                    return
+                }
+            }
+        }
+        defer {
+            heartbeat.cancel()
+            if Task.isCancelled { work.cancel() }
+        }
+
+        do {
+            let result = try await work.value
             try await http.submit(identity: identity, payload: [
                 "job_id": jobID,
                 "ok": true,
                 "data": result,
+            ])
+        } catch is CancellationError {
+            try? await http.submit(identity: identity, payload: [
+                "job_id": jobID,
+                "ok": false,
+                "error": "CancellationError",
+                "message": "remote job was cancelled by the controller",
             ])
         } catch {
             try await http.submit(identity: identity, payload: [

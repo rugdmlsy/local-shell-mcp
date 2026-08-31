@@ -775,7 +775,7 @@ When `machine` is supplied, the call additionally requires `remote:use` and runs
 
 ### `mobile_action`
 
-Run one native action on an LSM mobile worker. Permission-gated camera/photos actions never prompt remotely; http_probe is bounded; sandbox file actions stay under the app-managed LSM root.
+Run one native action on an LSM mobile worker. Permission-gated camera/photos actions never prompt remotely; approval_prompt requires the app foreground and returns only the human decision; network probes are bounded; sandbox file actions stay under the app-managed LSM root.
 
 | Parameter | Type | Required/default | Description |
 |---|---|---|---|

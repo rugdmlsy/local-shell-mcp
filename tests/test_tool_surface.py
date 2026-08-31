@@ -136,7 +136,19 @@ async def test_mcp_tool_surface_is_stable(tmp_path, monkeypatch):
         "photos_list",
         "photos_export",
         "network_status",
+        "network_history",
+        "dns_probe",
+        "tcp_probe",
+        "tls_probe",
         "http_probe",
+        "bookmarks_list",
+        "bookmark_import",
+        "bookmark_export",
+        "clipboard_status",
+        "clipboard_write",
+        "clipboard_read",
+        "shared_inbox_import",
+        "approval_prompt",
     } <= mobile_actions
 
 

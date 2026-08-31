@@ -15,6 +15,12 @@ struct LSMMobileWorkerApp: App {
                 .onChange(of: scenePhase) { _, newPhase in
                     model.handleScenePhase(newPhase)
                 }
+                #if LSM_SHARE_EXTENSION
+                .onOpenURL { url in
+                    guard url.scheme == "lsmworker", url.host == "import-share" else { return }
+                    model.importSharedInbox()
+                }
+                #endif
         }
     }
 }

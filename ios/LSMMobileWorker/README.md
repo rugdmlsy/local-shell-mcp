@@ -27,19 +27,46 @@ Camera and Photo Library permission prompts are only initiated by explicit butto
 ### Mobile network vantage point
 
 - `network_status`: report the current `NWPath` state, active interface class (Wi-Fi/cellular/etc.), expensive/constrained status, IPv4/IPv6 and DNS support.
+- `network_history`: return the last 32 meaningful path changes observed while the app process is alive.
+- `dns_probe`: resolve a public hostname from the phone and report returned IPv4/IPv6 addresses and latency.
+- `tcp_probe`: establish a bounded TCP connection to a public host/port from the phone.
+- `tls_probe`: establish a bounded TLS connection to a public host/port while preserving hostname SNI.
 - `http_probe`: bounded HTTP/HTTPS GET or HEAD from the phone, with a 1-20 second timeout and a maximum 64 KiB response sample.
 
-`http_probe` rejects localhost, `.local`, private, loopback, and link-local targets by default. This keeps ordinary remote jobs from implicitly crossing the iOS Local Network privacy boundary.
+Active probes reject localhost, `.local`, private, loopback, link-local, ULA, and CGNAT destinations. Hostnames are resolved first and rejected if they resolve to a local/private address before an active connection is attempted. This keeps ordinary remote jobs from implicitly crossing the iOS Local Network privacy boundary and avoids a simple DNS-rebinding bypass.
+
+### Approval terminal
+
+- `approval_prompt`: display a foreground-only native approval sheet with a bounded title, summary, details, and `low`/`medium`/`high`/`critical` risk level.
+- The worker heartbeats while waiting, then returns `approved` or `rejected` to the caller.
+- The phone does **not** execute the approved operation. The calling controller/ARP workflow remains responsible for enforcing that a risky action runs only after an affirmative decision.
+
+### Files picker and clipboard
+
+- External file/folder access can only be granted from the app UI with **Grant Access to File** / **Grant Access to Folder**. The app persists security-scoped bookmarks for those user-selected items.
+- `bookmarks_list`: list the bookmarks currently granted by the user.
+- `bookmark_import`: copy a selected external item into `Documents/LSM`.
+- `bookmark_export`: copy a sandbox item into a bookmarked external folder.
+- `clipboard_status`: report whether remote clipboard reads are locally enabled.
+- `clipboard_write`: write bounded text to the iOS pasteboard.
+- `clipboard_read`: read bounded text only while the app is foregrounded and only after the user enables **Allow Remote Clipboard Read** locally. iOS may still show its own paste privacy UI.
+
+A remote action cannot open the Files picker or enable clipboard reads.
 
 ### Binary and image transfer
 
 The mobile app does not put large media payloads into `mobile_action` JSON. It implements the existing LSM transfer wire tools used by `remote_transfer` and `image_view`:
 
 - `transfer_stat`
+- `transfer_read_chunk`
+- `transfer_begin_write`
+- `transfer_write_chunk`
+- `transfer_finish_write`
+- `transfer_abort_write`
 - `transfer_upload_url`
 - `transfer_download_url`
 
-Transfers are constrained to `Documents/LSM`, use raw HTTP transfer tickets, enforce a 4 MiB chunk limit, and verify expected byte size and SHA-256.
+Transfers are constrained to `Documents/LSM`. The worker supports both the controller relay/chunk wire and HTTP transfer tickets, enforces a 4 MiB chunk limit, and verifies expected byte size and SHA-256.
 
 Examples after the worker is online:
 
@@ -52,6 +79,16 @@ remote_transfer(
 
 image_view(machine="morrow-iphone", path="Captures/photo.jpg")
 ```
+
+## Share Extension
+
+The optional `LSMMobileWorkerWithShare` target embeds **Send to LSM**, an iOS Share Extension that accepts files, images, PDFs, web URLs, and text. The extension writes a package into an App Group inbox; the containing app imports it into `Documents/LSM/Shared`, after which normal `remote_transfer` and `image_view` work without a separate media protocol.
+
+The current Personal Development Team cannot provision the App Groups entitlement. Therefore:
+
+- `LSMMobileWorker`: default target, no App Group, remains signable/installable with the current Personal Team.
+- `LSMMobileWorkerWithShare`: App Group + embedded Share Extension; unsigned iPhoneOS SDK builds are validated now, and signed builds require a Developer Team that supports App Groups.
+- `shared_inbox_import` exists for the share-enabled build and is not advertised as a capability by the default build.
 
 ## App Intents / Shortcuts
 
@@ -110,6 +147,9 @@ The current deployment uses `https://mcp.xycdev.com` as the phone-reachable cont
 - Native workers send `supports_self_update=false`; the controller never attempts to replace the app with the Python worker bundle.
 - Files are constrained to `Documents/LSM`; absolute paths and traversal are rejected.
 - Camera, Photos, Notifications, and Location require explicit local permission first.
+- Files bookmarks can only be created from the local document picker; remote jobs may use only already-granted bookmarks.
+- Remote clipboard reads are locally opt-in and foreground-only.
+- Approval prompts require the app foreground and return only the human decision; they never execute the approved operation themselves.
 - Camera capture also requires the app to be foregrounded.
 - `open_url` accepts only HTTP/HTTPS.
 - Network probes are bounded and avoid private/local destinations by default.
@@ -138,4 +178,18 @@ xcodebuild \
 
 For the APNs-ready compile path, replace `Debug` with `PushDebug`. A signed `PushDebug` build additionally requires a provisioning team that supports Push Notifications.
 
-For a physical iPhone, select an Apple Development team, enable Developer Mode, pair/trust the Mac, then build/install the normal `Debug` configuration. The current Phase 2 app version is `0.2.1`.
+Compile the Share Extension variant without signing:
+
+```sh
+xcodebuild \
+  -project ios/LSMMobileWorker/LSMMobileWorker.xcodeproj \
+  -scheme LSMMobileWorkerWithShare \
+  -configuration Debug \
+  -sdk iphoneos \
+  CODE_SIGNING_ALLOWED=NO \
+  build
+```
+
+A signed share-enabled build requires a provisioning team that supports App Groups. `PushDebug` on the share-enabled target additionally requires Push Notifications.
+
+For a physical iPhone with the current Personal Team, build/install the normal `LSMMobileWorker` `Debug` configuration. The Phase 3 app version is `0.3.0`.

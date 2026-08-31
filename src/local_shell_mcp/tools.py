@@ -3416,12 +3416,24 @@ def _register_remote_admin_tools(mcp: FastMCP) -> None:
             "photos_list",
             "photos_export",
             "network_status",
+            "network_history",
+            "dns_probe",
+            "tcp_probe",
+            "tls_probe",
             "http_probe",
+            "bookmarks_list",
+            "bookmark_import",
+            "bookmark_export",
+            "clipboard_status",
+            "clipboard_write",
+            "clipboard_read",
+            "shared_inbox_import",
+            "approval_prompt",
         ],
         arguments: dict[str, Any] | None = None,
         timeout_s: int = 30,
     ) -> ToolResult:
-        """Run one native action on an LSM mobile worker. Permission-gated camera/photos actions never prompt remotely; http_probe is bounded; sandbox file actions stay under the app-managed LSM root."""
+        """Run one native action on an LSM mobile worker. Permission-gated camera/photos actions never prompt remotely; approval_prompt requires the app foreground and returns only the human decision; network probes are bounded; sandbox file actions stay under the app-managed LSM root."""
         try:
             manager = remote_manager()
             rows = manager.list_machines().get("machines", [])

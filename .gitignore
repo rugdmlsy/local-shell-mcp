@@ -20,6 +20,8 @@ node_modules/
 # XcodeGen output and per-user Xcode state
 ios/LSMMobileWorker/LSMMobileWorker.xcodeproj/
 ios/LSMMobileWorker/Sources/Info.plist
+ios/LSMMobileWorker/Sources/Info-Share.plist
+ios/LSMMobileWorker/ShareExtension/Info.plist
 **/xcuserdata/
 # VS Code extension local build outputs
 vscode-extension/node_modules/
