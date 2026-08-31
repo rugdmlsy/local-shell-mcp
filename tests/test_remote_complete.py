@@ -14,6 +14,7 @@ from starlette.applications import Starlette
 from starlette.testclient import TestClient
 
 import local_shell_mcp.remote as remote
+from local_shell_mcp.auth import AuthMiddleware
 from local_shell_mcp.errors import ShellExecutableNotFoundError
 from local_shell_mcp.models import CommandResult
 from local_shell_mcp.settings import get_settings
@@ -236,6 +237,48 @@ def test_remote_http_routes_success_and_errors(tmp_path, monkeypatch):
     assert "--invite is required" in join.text
     bundle = client.get(remote.REMOTE_WORKER_BUNDLE_PATH)
     assert bundle.status_code == 200
+
+
+def test_worker_event_route_uses_worker_token_behind_oauth(tmp_path, monkeypatch):
+    _configure(
+        tmp_path,
+        monkeypatch,
+        LOCAL_SHELL_MCP_AUTH_MODE="oauth",
+        LOCAL_SHELL_MCP_AUTH_BYPASS_LOCALHOST="false",
+        LOCAL_SHELL_MCP_OAUTH_JWT_SECRET="x" * 40,
+        LOCAL_SHELL_MCP_OAUTH_ADMIN_PIN="123456",
+    )
+    manager = remote.RemoteManager()
+    monkeypatch.setattr(remote, "REMOTE_MANAGER", manager)
+    app = Starlette(routes=remote.remote_routes())
+    app.add_middleware(AuthMiddleware)
+    client = TestClient(app, client=("203.0.113.9", 4242))
+
+    invite = asyncio.run(manager.create_invite("event-source", base_url="http://testserver"))
+    registered = client.post(
+        "/remote/register",
+        json={"invite": invite["code"], "name": "event-source", "info": {}},
+    )
+    assert registered.status_code == 200
+    token = registered.json()["data"]["token"]
+
+    event = client.post(
+        "/remote/worker-event",
+        headers={"authorization": f"Bearer {token}"},
+        json={
+            "id": "evt-auth-regression",
+            "type": "job_completed",
+            "title": "done",
+            "body": "finished",
+            "ttl_s": 60,
+        },
+    )
+    assert event.status_code == 200
+    assert client.post(
+        "/remote/worker-event",
+        headers={"authorization": "Bearer invalid-worker-token"},
+        json={"id": "evt-invalid", "type": "job_completed"},
+    ).status_code == 401
 
 
 @pytest.mark.asyncio

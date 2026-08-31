@@ -188,6 +188,10 @@ def test_auth_scopes_hosts_tokens_and_metadata(tmp_path, monkeypatch):
     for path in (
         "/healthz",
         "/join.ps1",
+        "/remote/push-token",
+        "/remote/events-ack",
+        "/remote/worker-event",
+        "/remote/mobile-dashboard",
         "/remote/transfer/x",
         "/.well-known/x",
         "/oauth/x",
