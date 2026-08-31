@@ -75,19 +75,53 @@ test "$#" -le 1 || {
 readonly ssh_control_dir="$(mktemp -d "${TMPDIR:-/tmp}/lsm-deploy.XXXXXX")"
 readonly ssh_control_path="${ssh_control_dir}/control"
 readonly -a ssh_options=(
+  -o BatchMode=yes
   -o ControlMaster=auto
   -o ControlPersist=180
   -o ControlPath="${ssh_control_path}"
   -o ConnectTimeout=10
   -o ConnectionAttempts=3
+  -o ServerAliveInterval=5
+  -o ServerAliveCountMax=2
 )
+readonly -a ssh_fresh_options=(
+  -o BatchMode=yes
+  -o ControlMaster=no
+  -o ControlPath=none
+  -o ConnectTimeout=10
+  -o ConnectionAttempts=1
+  -o ServerAliveInterval=5
+  -o ServerAliveCountMax=2
+)
+readonly post_switch_ssh_deadline_s="${LSM_DEPLOY_POST_SWITCH_SSH_DEADLINE_S:-45}"
+[[ "${post_switch_ssh_deadline_s}" =~ ^[1-9][0-9]*$ ]] || {
+  echo "invalid post-switch SSH deadline: ${post_switch_ssh_deadline_s}" >&2
+  exit 64
+}
 
 remote() {
   ssh "${ssh_options[@]}" "${ssh_host}" "$@"
 }
 
+remote_guarded() {
+  python3 "${script_dir}/run-command-with-timeout.py" \
+    "${post_switch_ssh_deadline_s}" \
+    ssh "${ssh_options[@]}" "${ssh_host}" "$@"
+}
+
+remote_fresh_guarded() {
+  python3 "${script_dir}/run-command-with-timeout.py" \
+    "${post_switch_ssh_deadline_s}" \
+    ssh "${ssh_fresh_options[@]}" "${ssh_host}" "$@"
+}
+
+# shellcheck source=deploy/morrow/ssh-guard.sh
+. "${script_dir}/ssh-guard.sh"
+
 cleanup_ssh() {
-  ssh "${ssh_options[@]}" -O exit "${ssh_host}" >/dev/null 2>&1 || true
+  python3 "${script_dir}/run-command-with-timeout.py" 5 \
+    ssh "${ssh_options[@]}" -O exit "${ssh_host}" >/dev/null 2>&1 || true
+  rm -f "${ssh_control_path}" 2>/dev/null || true
   rmdir "${ssh_control_dir}" 2>/dev/null || true
 }
 trap cleanup_ssh EXIT
@@ -254,35 +288,47 @@ service_pid() {
   remote systemctl show "${service_name}" -p MainPID --value
 }
 
+service_pid_guarded() {
+  remote_guarded systemctl show "${service_name}" -p MainPID --value
+}
+
+post_switch_transport_uncertain=false
+
 wait_for_release_process() {
   local target_release_name="$1"
   local old_pid="$2"
   local process_state
+  local status
+  local transport_streak=0
 
   # A systemd restart can spend roughly TimeoutStopSec draining active MCP
-  # sessions. Poll fresh SSH channels until both the PID changes and the
-  # interpreter path proves that systemd launched the requested release.
+  # sessions. Keep the established ControlMaster as the primary path to avoid
+  # VPS connection throttling, but put every session behind a hard deadline.
+  # A transport failure gets one independent-connection fallback.
   for attempt in $(seq 1 40); do
-    if process_state="$(remote bash -s -- \
-      "${deploy_root}" "${target_release_name}" "${service_name}" "${old_pid}" <<'REMOTE'
-set -u
-deploy_root="$1"
-release_name="$2"
-service_name="$3"
-old_pid="$4"
-pid="$(systemctl show "${service_name}" -p MainPID --value 2>/dev/null || true)"
-test -n "${pid}" && test "${pid}" != 0 && test "${pid}" != "${old_pid}" || exit 1
-systemctl is-active --quiet "${service_name}" || exit 1
-test -r "/proc/${pid}/cmdline" || exit 1
-tr '\0' '\n' < "/proc/${pid}/cmdline" \
-  | grep -Fxq "${deploy_root}/releases/${release_name}/.venv/bin/python" \
-  || exit 1
-printf '%s' "${pid}"
-REMOTE
-    )"; then
+    if process_state="$(post_switch_run_script \
+      "${script_dir}/check-release-process.sh" \
+      "${deploy_root}" "${target_release_name}" "${service_name}" "${old_pid}")"; then
+      status=0
+    else
+      status=$?
+    fi
+    if test "${status}" -eq 0; then
       echo "service process: ${process_state} (${target_release_name})"
       return 0
     fi
+    if test "${status}" -eq 75; then
+      transport_streak=$((transport_streak + 1))
+      echo "all post-switch SSH paths failed; retry ${transport_streak}/3" >&2
+      if test "${transport_streak}" -ge 3; then
+        post_switch_transport_uncertain=true
+        echo "cannot establish post-switch service state through SSH" >&2
+        return 75
+      fi
+      sleep 5
+      continue
+    fi
+    transport_streak=0
     test "${attempt}" -lt 40 || break
     sleep 2
   done
@@ -291,20 +337,60 @@ REMOTE
   return 1
 }
 
+verify_release_post_switch() {
+  local status
+  for attempt in 1 2 3; do
+    if post_switch_run_script \
+      "${script_dir}/verify-release.sh" \
+      "${deploy_root}" "${release_name}" "${service_name}" "${version}" \
+      "${service_env}"; then
+      status=0
+    else
+      status=$?
+    fi
+    if test "${status}" -eq 0; then
+      return 0
+    fi
+    if test "${status}" -ne 75; then
+      echo "post-switch release verification failed with remote status ${status}" >&2
+      return "${status}"
+    fi
+    echo "all post-switch SSH paths failed; verification retry ${attempt}/3" >&2
+    test "${attempt}" -lt 3 && sleep 5
+  done
+
+  post_switch_transport_uncertain=true
+  echo "post-switch verification is indeterminate because SSH transport remained unavailable" >&2
+  return 75
+}
+
 switched=false
 rollback_on_failure() {
   status="$?"
   trap - EXIT
   if test "${status}" -ne 0 && ${switched}; then
-    echo "post-switch verification failed; rolling back" >&2
-    rollback_pid="$(service_pid 2>/dev/null || true)"
-    if remote bash -s -- "${deploy_root}" "${service_name}" \
-      < "${script_dir}/rollback-release.sh"; then
-      rollback_release="$(remote bash -s -- "${deploy_root}" <<'REMOTE'
-basename "$(readlink -f "$1/current")"
-REMOTE
-)"
-      wait_for_release_process "${rollback_release}" "${rollback_pid}" || true
+    if ${post_switch_transport_uncertain}; then
+      echo "post-switch state is indeterminate because the SSH control path is unavailable" >&2
+      echo "preserving the current release; refusing automatic rollback without healthy control evidence" >&2
+    else
+      echo "post-switch verification failed; rolling back" >&2
+      rollback_pid="$(service_pid_guarded 2>/dev/null || true)"
+      if post_switch_run_script \
+        "${script_dir}/rollback-release.sh" "${deploy_root}" "${service_name}"; then
+        if rollback_release="$(post_switch_run_script \
+          "${script_dir}/current-release.sh" "${deploy_root}")"; then
+          rollback_state_status=0
+        else
+          rollback_state_status=$?
+        fi
+        if test "${rollback_state_status}" -eq 0; then
+          wait_for_release_process "${rollback_release}" "${rollback_pid}" || true
+        else
+          echo "rollback was requested but its final release could not be verified" >&2
+        fi
+      else
+        echo "automatic rollback command could not be completed; manual verification is required" >&2
+      fi
     fi
   fi
   cleanup_ssh
@@ -323,34 +409,7 @@ else
 fi
 wait_for_release_process "${release_name}" "${old_pid}"
 
-remote bash -s -- \
-  "${deploy_root}" "${release_name}" "${service_name}" "${version}" \
-  "${service_env}" <<'REMOTE'
-set -euo pipefail
-deploy_root="$1"
-release_name="$2"
-service_name="$3"
-version="$4"
-service_env="$5"
-for attempt in $(seq 1 30); do
-  if curl -fsS --max-time 2 http://127.0.0.1:8765/healthz >/dev/null; then
-    break
-  fi
-  test "${attempt}" -lt 30
-  sleep 1
-done
-systemctl is-active --quiet "${service_name}"
-test "$(basename "$(readlink -f "${deploy_root}/current")")" = "${release_name}"
-test "$("${deploy_root}/current/.venv/bin/local-shell-mcp" --version)" = "${version}"
-set -a
-. "${service_env}"
-set +a
-"${deploy_root}/current/.venv/bin/python" \
-  "${deploy_root}/current/scripts/probe-mcp.py" \
-  http://127.0.0.1:8765 \
-  --pin-env LOCAL_SHELL_MCP_OAUTH_ADMIN_PIN
-systemctl show "${service_name}" -p ActiveState -p SubState -p MainPID -p NRestarts --no-pager
-REMOTE
+verify_release_post_switch
 
 # A passing loopback MCP call proves the new controller is healthy. Do not turn
 # a later Cloudflare or client-network failure into an automatic code rollback.

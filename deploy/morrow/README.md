@@ -32,20 +32,28 @@ and icon, switches `current`, and performs local plus public health checks. Its
 localhost MCP probe performs a real `environment_get` call, proving that local
 execution remains enabled. The probe reads the OAuth admin PIN from the private
 service environment, exchanges it for an ephemeral token, and never places the
-PIN or token in the command line or logs. A failed post-switch check automatically invokes
-`rollback-release.sh`. Re-running the same release restarts it without replacing
-the `previous` rollback link. Service restarts are queued with non-interactive
-`sudo`; the command waits for a changed systemd PID whose interpreter belongs to
-the target release before it accepts the deployment. It also reuses one SSH
-ControlMaster connection for the whole transaction so VPS connection throttling
-cannot strand a verified candidate before cutover.
+PIN or token in the command line or logs. A post-switch check that reaches the VPS and proves the release unhealthy
+automatically invokes `rollback-release.sh`. A pure SSH transport failure is not
+health evidence: post-switch checks keep the established ControlMaster as the
+primary path (to avoid VPS SSH connection throttling), but every session has a
+hard local deadline plus ServerAlive probes. A transport-only failure gets one
+independent-connection fallback. If repeated rounds cannot establish either SSH
+path, deployment exits as indeterminate and preserves `current` instead of
+blindly rolling back through a control path that is itself unhealthy.
+Re-running the same release restarts it without replacing the `previous` rollback
+link. Service restarts are queued with non-interactive `sudo`; the command waits
+for a changed systemd PID whose interpreter belongs to the target release before
+it accepts the deployment. Before cutover it still reuses one SSH ControlMaster
+connection so VPS connection throttling cannot strand a verified candidate.
 
 The defaults use the existing `ovh-vps` SSH alias and production paths. Override
 them only when deliberately targeting a different environment with
 `LSM_DEPLOY_SSH_HOST`, `LSM_DEPLOY_ROOT`, `LSM_DEPLOY_SERVICE`,
 `LSM_DEPLOY_PUBLIC_BASE_URL`, `LSM_DEPLOY_EXPECTED_HOSTNAME`, or
 `LSM_DEPLOY_UV_BIN`. `LSM_DEPLOY_SERVICE_ENV` can point to an equivalent private
-service environment when testing a separate deployment.
+service environment when testing a separate deployment. The post-switch SSH
+wall-clock deadline defaults to 45 seconds per attempt and can be adjusted with
+`LSM_DEPLOY_POST_SWITCH_SSH_DEADLINE_S` when diagnosing unusually slow links.
 
 ## Build a pinned release
 
