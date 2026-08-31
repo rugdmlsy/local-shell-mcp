@@ -10,6 +10,7 @@ WORKER_CLIENT = IOS_ROOT / "Sources" / "WorkerClient.swift"
 WORKER_RUNTIME = IOS_ROOT / "Sources" / "WorkerRuntime.swift"
 SCANNER = IOS_ROOT / "Sources" / "CodeScanner.swift"
 APP_INTENTS = IOS_ROOT / "Sources" / "LSMAppIntents.swift"
+CONTROLLER_VIEWS = IOS_ROOT / "Sources" / "MobileControllerViews.swift"
 
 
 def test_ios_worker_dispatches_controller_transfer_wire_tools() -> None:
@@ -68,6 +69,16 @@ def test_phase4_controller_events_use_authenticated_poll_ack_and_dashboard_route
     assert 'path: "/remote/mobile-dashboard"' in client
     assert 'payload["events"]' in client
     assert 'payload["events"]' in runtime
+
+
+def test_controller_events_visually_distinguish_status_and_session_context() -> None:
+    source = CONTROLLER_VIEWS.read_text(encoding="utf-8")
+    assert 'label: "Succeeded"' in source
+    assert "Color.green.opacity" in source
+    assert 'label: "Execution paused"' in source
+    assert "Color.yellow.opacity" in source
+    assert "sessionDescription(for event" in source
+    assert "Color.accentColor.opacity" in source
 
 
 def test_qr_scanner_remains_local_user_initiated() -> None:

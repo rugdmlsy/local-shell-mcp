@@ -12,7 +12,7 @@ settings:
     SWIFT_VERSION: "5.0"
     SWIFT_STRICT_CONCURRENCY: minimal
     CURRENT_PROJECT_VERSION: 1
-    MARKETING_VERSION: 0.4.1
+    MARKETING_VERSION: 0.4.2
 
 targets:
   LSMMobileWorker:
