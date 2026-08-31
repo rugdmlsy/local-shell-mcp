@@ -57,7 +57,7 @@ async def _dispatch_session_notifications() -> None:
                 event_type="agent_interrupted_or_expired",
                 title="LSM agent execution paused",
                 body=(
-                    f"{label}: no agent activity for {int(plan.get('execution_lease_s') or 900) // 60} min "
+                    f"{label}: no agent activity for {int(plan.get('execution_lease_s') or 1800) // 60} min "
                     "while the Goal is unfinished. The ChatGPT turn may have been interrupted; auto-continuation is due."
                 ),
                 data={
@@ -88,7 +88,7 @@ async def notification_watchdog_loop() -> None:
     """Dispatch durable mobile events independently of a ChatGPT turn.
 
     This cannot observe the platform's exact per-turn cutoff. It uses LSM's
-    15-minute Goal execution lease as a conservative interruption signal and
+    30-minute Goal execution lease as a conservative interruption signal and
     sends deterministic completion events for jobs that opted into
     ``notify_on_finish``.
     """

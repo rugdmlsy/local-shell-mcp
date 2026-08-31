@@ -195,7 +195,7 @@ async def test_session_watchdog_reports_goal_lease_expiry_without_claiming_exact
                         "status": "active",
                         "steps": [{"id": "work", "text": "work", "status": "active"}],
                         "last_agent_activity": 100.0,
-                        "execution_lease_s": 900,
+                        "execution_lease_s": 1800,
                         "continuation_due_at": 1000.0,
                         "continuation_due": True,
                         "continuation_count": 0,
@@ -218,6 +218,6 @@ async def test_session_watchdog_reports_goal_lease_expiry_without_claiming_exact
 
     assert len(calls) == 1
     assert calls[0]["event_type"] == "agent_interrupted_or_expired"
-    assert "15 min" in calls[0]["body"]
+    assert "30 min" in calls[0]["body"]
     assert "may have been interrupted" in calls[0]["body"]
     assert "platform timeout reached" not in calls[0]["body"].lower()

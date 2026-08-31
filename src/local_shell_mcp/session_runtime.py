@@ -16,7 +16,7 @@ from typing import Any
 from .settings import get_settings
 from .state_store import FileStateStore, get_state_store
 
-PLAN_EXECUTION_LEASE_S = 15 * 60
+PLAN_EXECUTION_LEASE_S = 30 * 60
 PLAN_MAX_CONTINUATIONS = 10
 PLAN_CONTINUATION_PENDING_TTL_S = 5 * 60
 PLAN_CONTINUATION_FAILURE_BACKOFF_S = 5 * 60
