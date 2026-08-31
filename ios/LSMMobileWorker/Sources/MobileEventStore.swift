@@ -14,6 +14,7 @@ struct MobileControllerEvent: Identifiable, Codable, Equatable {
 final class MobileEventStore: ObservableObject {
     static let shared = MobileEventStore()
     private static let key = "mobile.controller.events.v1"
+    private static let retentionInterval: TimeInterval = 24 * 60 * 60
     private let maxItems = 100
 
     @Published private(set) var items: [MobileControllerEvent] = []
@@ -53,6 +54,16 @@ final class MobileEventStore: ObservableObject {
         save()
     }
 
+    @discardableResult
+    func pruneExpired(now: Date = Date()) -> Int {
+        let cutoff = now.addingTimeInterval(-Self.retentionInterval)
+        let originalCount = items.count
+        items.removeAll { $0.createdAt < cutoff }
+        let removed = originalCount - items.count
+        if removed > 0 { save() }
+        return removed
+    }
+
     private func postLocalNotification(id: String, title: String, body: String) async {
         let center = UNUserNotificationCenter.current()
         let settings = await center.notificationSettings()
@@ -67,7 +78,10 @@ final class MobileEventStore: ObservableObject {
     private func load() {
         guard let data = UserDefaults.standard.data(forKey: Self.key),
               let decoded = try? JSONDecoder().decode([MobileControllerEvent].self, from: data) else { return }
-        items = Array(decoded.prefix(maxItems))
+        let cutoff = Date().addingTimeInterval(-Self.retentionInterval)
+        let retained = decoded.filter { $0.createdAt >= cutoff }
+        items = Array(retained.prefix(maxItems))
+        if retained.count != decoded.count || items.count != decoded.count { save() }
     }
 
     private func save() {

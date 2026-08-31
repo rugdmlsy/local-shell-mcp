@@ -111,6 +111,7 @@ struct ControllerEventsView: View {
             }
         }
         .navigationTitle("Controller Events")
+        .onAppear { events.pruneExpired() }
         .toolbar {
             if !events.items.isEmpty {
                 Button("Clear", role: .destructive) { events.clear() }

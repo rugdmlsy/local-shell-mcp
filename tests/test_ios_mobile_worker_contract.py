@@ -11,6 +11,7 @@ WORKER_RUNTIME = IOS_ROOT / "Sources" / "WorkerRuntime.swift"
 SCANNER = IOS_ROOT / "Sources" / "CodeScanner.swift"
 APP_INTENTS = IOS_ROOT / "Sources" / "LSMAppIntents.swift"
 CONTROLLER_VIEWS = IOS_ROOT / "Sources" / "MobileControllerViews.swift"
+EVENT_STORE = IOS_ROOT / "Sources" / "MobileEventStore.swift"
 
 
 def test_ios_worker_dispatches_controller_transfer_wire_tools() -> None:
@@ -79,6 +80,16 @@ def test_controller_events_visually_distinguish_status_and_session_context() -> 
     assert "Color.yellow.opacity" in source
     assert "sessionDescription(for event" in source
     assert "Color.accentColor.opacity" in source
+
+
+def test_controller_events_expire_after_one_day_with_lazy_pruning() -> None:
+    store = EVENT_STORE.read_text(encoding="utf-8")
+    views = CONTROLLER_VIEWS.read_text(encoding="utf-8")
+    assert "retentionInterval: TimeInterval = 24 * 60 * 60" in store
+    assert "func pruneExpired(now: Date = Date())" in store
+    assert "$0.createdAt < cutoff" in store
+    assert "decoded.filter { $0.createdAt >= cutoff }" in store
+    assert ".onAppear { events.pruneExpired() }" in views
 
 
 def test_qr_scanner_remains_local_user_initiated() -> None:
