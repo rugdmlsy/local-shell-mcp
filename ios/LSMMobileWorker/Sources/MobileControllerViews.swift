@@ -43,7 +43,7 @@ struct MobileDashboardView: View {
                 Section("Error") { Text(error).foregroundStyle(.red) }
             }
         }
-        .navigationTitle("LSM Controller")
+        .navigationTitle("Machines & Jobs")
         .toolbar {
             Button("Refresh") { Task { await model.refreshDashboard() } }
         }

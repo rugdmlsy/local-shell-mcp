@@ -225,4 +225,4 @@ xcodebuild \
 
 A signed share-enabled build requires a provisioning team that supports App Groups. `PushDebug` on the share-enabled target additionally requires Push Notifications.
 
-For a physical iPhone with the current Personal Team, build/install the normal `LSMMobileWorker` `Debug` configuration. The Phase 4 app version is `0.4.3`. `mobile.controller_events` is an explicit capability marker; controllers must not deliver event/ACK poll extensions to older iOS workers that do not advertise it.
+For a physical iPhone with the current Personal Team, build/install the normal `LSMMobileWorker` `Debug` configuration. The Phase 4 app version is `0.4.4`. `mobile.controller_events` is an explicit capability marker; controllers must not deliver event/ACK poll extensions to older iOS workers that do not advertise it.

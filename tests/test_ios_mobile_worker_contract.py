@@ -92,12 +92,27 @@ def test_controller_events_expire_after_one_day_with_lazy_pruning() -> None:
     assert ".onAppear { events.pruneExpired() }" in views
 
 
+def test_ios_worker_uses_compact_home_settings_and_bottom_controller_tabs() -> None:
+    content = CONTENT_VIEW.read_text(encoding="utf-8")
+    views = CONTROLLER_VIEWS.read_text(encoding="utf-8")
+    assert "TabView {" in content
+    assert 'Label("Worker", systemImage: "antenna.radiowaves.left.and.right")' in content
+    assert 'Label("Machines", systemImage: "desktopcomputer")' in content
+    assert 'Label("Inbox", systemImage: "tray.full")' in content
+    assert 'Label("Events", systemImage: "bell.badge")' in content
+    assert "WorkerSettingsView" in content
+    assert 'Image(systemName: "gearshape")' in content
+    assert 'DisclosureGroup {' in content
+    assert 'Label("Tools", systemImage: "wrench.and.screwdriver")' in content
+    assert '.navigationTitle("Machines & Jobs")' in views
+
+
 def test_qr_scanner_remains_local_user_initiated() -> None:
     content = CONTENT_VIEW.read_text(encoding="utf-8")
     executor = ACTION_EXECUTOR.read_text(encoding="utf-8")
     scanner = SCANNER.read_text(encoding="utf-8")
     intents = APP_INTENTS.read_text(encoding="utf-8")
-    assert 'Button("Scan QR / Barcode")' in content
+    assert 'Label("Scan QR / Barcode", systemImage: "qrcode.viewfinder")' in content
     assert "startLocalScan()" in content
     assert "startLocalScan()" not in executor
     assert "AVCaptureMetadataOutput" in scanner
