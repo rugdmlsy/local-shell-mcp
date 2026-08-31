@@ -1136,6 +1136,7 @@ async def start_job(
         "notify_on_finish": bool(notify_on_finish),
         "notify_title": notify_title,
         "notify_summary_path": notify_summary_path,
+        "notify_delivery_version": 1,
     }
     operation_id = _begin_job_operation(job, "start")
     try:
@@ -1231,6 +1232,79 @@ async def list_jobs(include_finished: bool = True) -> dict[str, Any]:
             counts[status] = counts.get(status, 0) + 1
     rows.sort(key=lambda item: float(item.get("created_at") or 0), reverse=True)
     return {"jobs": rows, "counts": counts}
+
+
+async def collect_pending_job_notifications() -> list[dict[str, Any]]:
+    """Return stable, not-yet-delivered completion events for opt-in jobs.
+
+    Events keep a stable id across retries to the notification transport. The
+    caller must invoke ``mark_job_notification_sent`` only after a downstream
+    notification sink accepts the event.
+    """
+    active = (
+        set()
+        if get_settings().disable_local
+        else _active_session_ids(await list_shells())
+    )
+    now = _utc()
+    events: list[dict[str, Any]] = []
+    with _store_transaction() as store:
+        jobs = [_refresh_job_status(job, active, now) for job in store.get("jobs", [])]
+        store["jobs"] = jobs
+        for job in jobs:
+            if job.get("status") not in TERMINAL_STATUSES:
+                continue
+            if not bool(job.get("notify_on_finish", False)):
+                continue
+            if int(job.get("notify_delivery_version") or 0) < 1:
+                continue
+            if job.get("notify_sent_at"):
+                continue
+            event_id = str(job.get("notify_event_id") or "")
+            if not event_id:
+                event_id = (
+                    f"job-finish:{job.get('job_id')}:{int(job.get('attempts') or 1)}:"
+                    f"{int(float(job.get('completed_at') or now) * 1000)}"
+                )
+                job["notify_event_id"] = event_id
+            title = str(job.get("notify_title") or f"LSM job: {job.get('name') or job.get('job_id')}")
+            status = str(job.get("status") or "completed")
+            exit_code = job.get("exit_code")
+            body = f"{status}"
+            if exit_code is not None:
+                body += f" · exit {exit_code}"
+            error = str(job.get("error") or "").strip()
+            if error:
+                body += f" · {error[:300]}"
+            events.append(
+                {
+                    "id": event_id,
+                    "type": "job_completed",
+                    "title": title[:200],
+                    "body": body[:1_000],
+                    "data": {
+                        "job_id": job.get("job_id"),
+                        "name": job.get("name"),
+                        "status": status,
+                        "exit_code": exit_code,
+                        "completed_at": job.get("completed_at"),
+                    },
+                }
+            )
+    return events
+
+
+def mark_job_notification_sent(event_id: str) -> bool:
+    normalized = str(event_id).strip()
+    if not normalized:
+        return False
+    with _store_transaction() as store:
+        for job in store.get("jobs", []):
+            if str(job.get("notify_event_id") or "") != normalized:
+                continue
+            job["notify_sent_at"] = _utc()
+            return True
+    return False
 
 
 async def tail_job(job_id: str, lines: int = 200) -> dict[str, Any]:
@@ -1344,6 +1418,9 @@ async def _retry_managed_job(
             job["notify_title"] = notify_title
         if notify_summary_path is not None:
             job["notify_summary_path"] = notify_summary_path
+        job.pop("notify_event_id", None)
+        job.pop("notify_sent_at", None)
+        job["notify_delivery_version"] = 1
         job.update(
             {
                 "status": "running",
@@ -1483,6 +1560,9 @@ async def retry_job(
                 job["notify_title"] = notify_title
             if notify_summary_path is not None:
                 job["notify_summary_path"] = notify_summary_path
+            job.pop("notify_event_id", None)
+            job.pop("notify_sent_at", None)
+            job["notify_delivery_version"] = 1
             job.update(
                 {
                     "status": "retrying",

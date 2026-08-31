@@ -6,6 +6,9 @@ struct ContentView: View {
     @ObservedObject private var approvals = ApprovalPromptCoordinator.shared
     @ObservedObject private var externalFiles = ExternalFileAccessManager.shared
     @ObservedObject private var clipboard = MobileClipboardProvider.shared
+    @ObservedObject private var scanner = CodeScannerCoordinator.shared
+    @ObservedObject private var inbox = MobileInboxStore.shared
+    @ObservedObject private var events = MobileEventStore.shared
     @State private var showFilePicker = false
     @State private var showDirectoryPicker = false
     @State private var fileAccessMessage = ""
@@ -108,6 +111,34 @@ struct ContentView: View {
                     }
                 }
 
+                Section("Mobile controller") {
+                    NavigationLink("Machines & active jobs") {
+                        MobileDashboardView(model: model)
+                    }
+                    NavigationLink("Inbox (\(inbox.items.filter { !$0.read }.count) unread)") {
+                        MobileInboxView()
+                    }
+                    NavigationLink("Controller events (\(events.items.count))") {
+                        ControllerEventsView()
+                    }
+                    Button("Scan QR / Barcode") {
+                        scanner.startLocalScan()
+                    }
+                    if let scan = scanner.lastScan {
+                        Text("Last scan: \(scan.value)")
+                            .font(.footnote)
+                            .lineLimit(2)
+                    }
+                    if !scanner.message.isEmpty {
+                        Text(scanner.message)
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                    Text("Code scanning is always started locally from this screen; remote actions may only read the last scan result.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+
                 Section("Mobile capabilities") {
                     capability("Device information", detail: "Model, iOS version, CPU/memory summary")
                     capability("Battery", detail: "Charge state, percentage, Low Power Mode")
@@ -121,11 +152,16 @@ struct ContentView: View {
                     capability("Mobile network probe", detail: "Path history plus bounded public DNS/TCP/TLS/HTTP probes")
                     capability("External Files", detail: "Import/export only through files or folders explicitly selected in this app")
                     capability("Clipboard", detail: "Remote write; foreground read only after explicit local opt-in")
+                    capability("Device status", detail: "Storage, thermal state, display, locale, uptime, battery and power state")
+                    capability("Motion sensors", detail: "Bounded foreground accelerometer, gyro, magnetometer and attitude snapshot")
+                    capability("QR / barcode scanner", detail: "Local-user initiated camera scan; remote side can only read the last scan")
+                    capability("Mobile inbox", detail: "Receive text, URL and sandbox-file handoffs from LSM")
+                    capability("Controller dashboard", detail: "Read-only machine status and active-job overview")
                     #if LSM_SHARE_EXTENSION
                     capability("Share Extension", detail: "Send files, images, PDFs, URLs, or text from the iOS share sheet into Documents/LSM/Shared")
                     #endif
                     capability("Background wake", detail: "APNs + BGAppRefresh best effort; iOS still controls execution")
-                    capability("Shortcuts", detail: "Check In, Status, and Open LSM Worker App Intents")
+                    capability("Shortcuts", detail: "Check In, Status, Open, Inbox, Controller and Scanner App Intents")
                     capability("Approval terminal", detail: "Foreground approve/reject prompts for controller actions; the phone returns only the decision")
                 }
 
@@ -140,6 +176,14 @@ struct ContentView: View {
             }
             .navigationTitle("LSM Worker")
         }
+        .onAppear {
+            if UserDefaults.standard.bool(forKey: "mobile.intent.open_scanner") {
+                UserDefaults.standard.removeObject(forKey: "mobile.intent.open_scanner")
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                    scanner.startLocalScan()
+                }
+            }
+        }
         .fileImporter(
             isPresented: $showFilePicker,
             allowedContentTypes: [.item],
@@ -153,6 +197,13 @@ struct ContentView: View {
             allowsMultipleSelection: false
         ) { result in
             handleFileSelection(result)
+        }
+        .sheet(isPresented: $scanner.presenting) {
+            CodeScannerSheet(
+                onScan: { value, type in scanner.record(value: value, type: type) },
+                onCancel: { scanner.cancel() }
+            )
+            .ignoresSafeArea()
         }
         .sheet(isPresented: Binding(
             get: { approvals.request != nil },

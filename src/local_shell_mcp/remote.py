@@ -50,7 +50,15 @@ from .fs_ops import (
     write_content,
     write_text,
 )
-from .jobs import list_jobs, retry_job, start_job, stop_job, tail_job
+from .jobs import (
+    collect_pending_job_notifications,
+    list_jobs,
+    mark_job_notification_sent,
+    retry_job,
+    start_job,
+    stop_job,
+    tail_job,
+)
 from .models import ok_result as _ok
 from .patch_ops import git_apply_command, git_apply_prefix, normalize_patch_text
 from .peer_transfer import close_peer_receiver, open_peer_receiver
@@ -111,6 +119,9 @@ REMOTE_WORKER_REGISTRY_GENERATION_FILE_NAME = "remote-workers.generation"
 REMOTE_WORKER_IDENTITY_FILE_NAME = "identity.json"
 MAX_REMOTE_INVITES = 1_024
 MAX_REMOTE_MACHINE_NAME_LENGTH = 128
+MAX_REMOTE_MOBILE_EVENTS = 100
+MAX_REMOTE_MOBILE_RECENT_EVENT_IDS = 500
+REMOTE_MOBILE_EVENT_DEFAULT_TTL_S = 7 * 24 * 60 * 60
 REMOTE_NON_CANCELLABLE_WORKER_TOOLS = frozenset(
     {
         "write_file",
@@ -237,6 +248,8 @@ class RemoteWorker:
     push_token: str | None = None
     push_environment: str | None = None
     last_wake_at: float = 0.0
+    pending_events: list[dict[str, Any]] = field(default_factory=list)
+    recent_event_ids: list[str] = field(default_factory=list)
     queue: asyncio.Queue[dict[str, Any]] = field(default_factory=asyncio.Queue)
 
 
@@ -395,6 +408,12 @@ class RemoteManager:
             worker.push_environment = (
                 push_environment if push_environment in {"development", "production"} else None
             )
+            worker.pending_events = [
+                dict(event) for event in item.get("pending_events", []) if isinstance(event, dict)
+            ][-MAX_REMOTE_MOBILE_EVENTS:]
+            worker.recent_event_ids = [
+                str(event_id) for event_id in item.get("recent_event_ids", []) if str(event_id)
+            ][-MAX_REMOTE_MOBILE_RECENT_EVENT_IDS:]
             workers[name] = worker
             tokens[access] = name
         now = _utc()
@@ -440,6 +459,8 @@ class RemoteManager:
                     "info": worker.info,
                     "push_token": worker.push_token,
                     "push_environment": worker.push_environment,
+                    "pending_events": worker.pending_events[-MAX_REMOTE_MOBILE_EVENTS:],
+                    "recent_event_ids": worker.recent_event_ids[-MAX_REMOTE_MOBILE_RECENT_EVENT_IDS:],
                 }
                 for worker in sorted(self.workers.values(), key=lambda item: item.name)
             ],
@@ -698,6 +719,200 @@ class RemoteManager:
             )
         return result
 
+    def _prune_mobile_events_locked(self, worker: RemoteWorker, now: float | None = None) -> None:
+        current = _utc() if now is None else now
+        worker.pending_events = [
+            event
+            for event in worker.pending_events
+            if float(event.get("expires_at") or (current + 1)) > current
+        ][-MAX_REMOTE_MOBILE_EVENTS:]
+        worker.recent_event_ids = worker.recent_event_ids[-MAX_REMOTE_MOBILE_RECENT_EVENT_IDS:]
+
+    def _mobile_events_snapshot_locked(self, worker: RemoteWorker) -> list[dict[str, Any]]:
+        self._prune_mobile_events_locked(worker)
+        return [dict(event) for event in worker.pending_events[:20]]
+
+    async def queue_mobile_event(
+        self,
+        *,
+        event_id: str,
+        event_type: str,
+        title: str,
+        body: str,
+        data: dict[str, Any] | None = None,
+        machine: str | None = None,
+        ttl_s: int = REMOTE_MOBILE_EVENT_DEFAULT_TTL_S,
+        wake_reason: str = "event",
+    ) -> dict[str, Any]:
+        normalized_id = str(event_id).strip()[:160]
+        if not normalized_id:
+            raise ValueError("mobile event id is required")
+        normalized_type = str(event_type).strip()[:80] or "event"
+        normalized_title = str(title).strip()[:200] or "LSM"
+        normalized_body = str(body).strip()[:1_000] or "Controller event"
+        now = _utc()
+        event = {
+            "id": normalized_id,
+            "type": normalized_type,
+            "title": normalized_title,
+            "body": normalized_body,
+            "created_at": now,
+            "expires_at": now + min(max(int(ttl_s), 60), 30 * 24 * 60 * 60),
+            "data": dict(data or {}),
+        }
+        targets: list[RemoteWorker] = []
+        queued: list[str] = []
+        duplicates: list[str] = []
+        with self._state_lock, self._registry_transaction_unlocked():
+            if machine:
+                worker = self.workers.get(machine)
+                if not worker:
+                    raise ValueError(f"unknown remote machine: {machine}")
+                candidates = [worker]
+            else:
+                candidates = list(self.workers.values())
+            for worker in candidates:
+                if "mobile" not in set(worker.capabilities):
+                    if machine:
+                        raise ValueError(f"remote machine is not a mobile worker: {worker.name}")
+                    continue
+                self._prune_mobile_events_locked(worker, now)
+                known = set(worker.recent_event_ids)
+                known.update(str(item.get("id") or "") for item in worker.pending_events)
+                if normalized_id in known:
+                    duplicates.append(worker.name)
+                    continue
+                worker.pending_events.append(dict(event))
+                worker.pending_events = worker.pending_events[-MAX_REMOTE_MOBILE_EVENTS:]
+                queued.append(worker.name)
+                targets.append(worker)
+            if queued:
+                self._save_registry_unlocked()
+        for worker in targets:
+            if self._wake_is_configured(worker):
+                with contextlib.suppress(Exception):
+                    await self._send_worker_wake(worker, wake_reason)
+        return {
+            "event_id": normalized_id,
+            "queued_machines": queued,
+            "duplicate_machines": duplicates,
+            "accepted": bool(queued or duplicates),
+        }
+
+    async def acknowledge_mobile_events(self, access: str, ids: list[str]) -> dict[str, Any]:
+        normalized = {str(event_id).strip() for event_id in ids if str(event_id).strip()}
+        if len(normalized) > 100:
+            raise ValueError("too many mobile event ids")
+        removed: list[str] = []
+        with self._state_lock, self._registry_transaction_unlocked():
+            name = self.tokens.get(access)
+            if not name:
+                raise PermissionError("invalid worker identity")
+            worker = self.workers.get(name)
+            if not worker or "mobile" not in set(worker.capabilities):
+                raise PermissionError("mobile worker identity is required")
+            remaining: list[dict[str, Any]] = []
+            for event in worker.pending_events:
+                event_id = str(event.get("id") or "")
+                if event_id in normalized:
+                    removed.append(event_id)
+                    if event_id and event_id not in worker.recent_event_ids:
+                        worker.recent_event_ids.append(event_id)
+                else:
+                    remaining.append(event)
+            worker.pending_events = remaining
+            worker.recent_event_ids = worker.recent_event_ids[-MAX_REMOTE_MOBILE_RECENT_EVENT_IDS:]
+            if removed:
+                self._save_registry_unlocked()
+        return {"acked": removed, "count": len(removed)}
+
+    async def submit_worker_event(self, access: str, payload: dict[str, Any]) -> dict[str, Any]:
+        worker = self._worker_by_token(access)
+        event_id = str(payload.get("id") or "").strip()
+        if not event_id:
+            raise ValueError("worker event id is required")
+        result = await self.queue_mobile_event(
+            event_id=event_id,
+            event_type=str(payload.get("type") or "worker_event"),
+            title=str(payload.get("title") or "LSM worker event"),
+            body=str(payload.get("body") or f"Event from {worker.name}"),
+            data={**dict(payload.get("data") or {}), "source_machine": worker.name},
+            ttl_s=int(payload.get("ttl_s") or REMOTE_MOBILE_EVENT_DEFAULT_TTL_S),
+            wake_reason="worker_event",
+        )
+        with contextlib.suppress(Exception):
+            audit("remote_worker_event", machine=worker.name, event_id=event_id, accepted=result["accepted"])
+        return result
+
+    async def mobile_dashboard(self, access: str) -> dict[str, Any]:
+        requester = self._worker_by_token(access)
+        if "mobile" not in set(requester.capabilities):
+            raise PermissionError("mobile worker identity is required")
+        machine_snapshot = self.list_machines()
+        machines: list[dict[str, Any]] = []
+        online_desktops: list[str] = []
+        for row in machine_snapshot.get("machines", []):
+            info = dict(row.get("info") or {})
+            machines.append(
+                {
+                    "name": row.get("name"),
+                    "status": row.get("status"),
+                    "platform": info.get("platform") or info.get("system") or "unknown",
+                    "cpu_percent": info.get("cpu_percent"),
+                    "memory_percent": info.get("memory_percent"),
+                    "battery_percent": info.get("battery_percent"),
+                    "last_seen_age_s": row.get("last_seen_age_s"),
+                }
+            )
+            if row.get("status") == "online" and "mobile" not in set(row.get("capabilities") or []):
+                online_desktops.append(str(row.get("name")))
+
+        jobs: list[dict[str, Any]] = []
+        local = await list_jobs(include_finished=False)
+        for job in local.get("jobs", [])[:20]:
+            jobs.append(
+                {
+                    "machine": "controller",
+                    "job_id": job.get("job_id"),
+                    "name": job.get("name"),
+                    "status": job.get("status"),
+                    "updated_at": job.get("updated_at"),
+                }
+            )
+
+        async def remote_jobs(machine: str) -> tuple[str, dict[str, Any] | Exception]:
+            try:
+                return machine, await self.call(
+                    machine,
+                    "job_list",
+                    {"include_finished": False},
+                    timeout_s=4,
+                )
+            except Exception as exc:  # noqa: BLE001
+                return machine, exc
+
+        if online_desktops:
+            rows = await asyncio.gather(*(remote_jobs(machine) for machine in online_desktops[:8]))
+            for machine, result in rows:
+                if isinstance(result, Exception) or not result.get("ok", False):
+                    continue
+                data = result.get("data") if isinstance(result.get("data"), dict) else result
+                for job in list(data.get("jobs") or [])[:20]:
+                    jobs.append(
+                        {
+                            "machine": machine,
+                            "job_id": job.get("job_id"),
+                            "name": job.get("name"),
+                            "status": job.get("status"),
+                            "updated_at": job.get("updated_at"),
+                        }
+                    )
+        return {
+            "machines": machines,
+            "jobs": jobs[:80],
+            "generated_at": _utc(),
+        }
+
     def _default_machine_name(self, payload: dict[str, Any]) -> str:
         self._load_registry_unlocked()
         info = payload.get("info") if isinstance(payload.get("info"), dict) else {}
@@ -779,9 +994,20 @@ class RemoteManager:
             if protocol_version:
                 worker.info["poll_protocol_version"] = protocol_version
             worker.info["supports_self_update"] = supports_self_update
+            mobile_events = self._mobile_events_snapshot_locked(worker)
         if upgrade and upgrade["required"]:
+            response = {
+                "job": None,
+                "upgrade": upgrade,
+                "poll_timeout_s": configured_poll_timeout_s,
+            }
+            if mobile_events:
+                response["events"] = mobile_events
+            return response
+        if mobile_events:
             return {
                 "job": None,
+                "events": mobile_events,
                 "upgrade": upgrade,
                 "poll_timeout_s": configured_poll_timeout_s,
             }
@@ -790,21 +1016,31 @@ class RemoteManager:
         while True:
             remaining = deadline - loop.time()
             if remaining <= 0:
-                return {
+                with self._state_lock:
+                    mobile_events = self._mobile_events_snapshot_locked(worker)
+                response = {
                     "job": None,
                     "heartbeat": True,
                     "upgrade": upgrade,
                     "poll_timeout_s": configured_poll_timeout_s,
                 }
+                if mobile_events:
+                    response["events"] = mobile_events
+                return response
             try:
                 job = await asyncio.wait_for(worker.queue.get(), timeout=remaining)
             except TimeoutError:
-                return {
+                with self._state_lock:
+                    mobile_events = self._mobile_events_snapshot_locked(worker)
+                response = {
                     "job": None,
                     "heartbeat": True,
                     "upgrade": upgrade,
                     "poll_timeout_s": configured_poll_timeout_s,
                 }
+                if mobile_events:
+                    response["events"] = mobile_events
+                return response
             job_id = str(job.get("id") or "")
             with self._state_lock:
                 self._prune_cancelled_jobs_locked()
@@ -812,11 +1048,16 @@ class RemoteManager:
                     self.cancelled_jobs.pop(job_id, None)
                     continue
                 self.claimed_jobs.add(job_id)
-            return {
+            with self._state_lock:
+                mobile_events = self._mobile_events_snapshot_locked(worker)
+            response = {
                 "job": job,
                 "upgrade": upgrade,
                 "poll_timeout_s": configured_poll_timeout_s,
             }
+            if mobile_events:
+                response["events"] = mobile_events
+            return response
 
     async def heartbeat(self, token: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
         worker = self._worker_by_token(token)
@@ -1187,6 +1428,41 @@ async def push_token_endpoint(request: Any):  # noqa: ANN201
         return _error(str(exc), type(exc).__name__, 401)
 
 
+async def events_ack_endpoint(request: Any):  # noqa: ANN201
+    from starlette.responses import JSONResponse
+
+    try:
+        payload = await request.json()
+        ids = payload.get("ids") if isinstance(payload, dict) else []
+        if not isinstance(ids, list):
+            raise ValueError("ids must be a list")
+        return JSONResponse(
+            _ok(await remote_manager().acknowledge_mobile_events(_bearer_token(request), ids))
+        )
+    except Exception as exc:
+        return _error(str(exc), type(exc).__name__, 401)
+
+
+async def worker_event_endpoint(request: Any):  # noqa: ANN201
+    from starlette.responses import JSONResponse
+
+    try:
+        return JSONResponse(
+            _ok(await remote_manager().submit_worker_event(_bearer_token(request), await request.json()))
+        )
+    except Exception as exc:
+        return _error(str(exc), type(exc).__name__, 401)
+
+
+async def mobile_dashboard_endpoint(request: Any):  # noqa: ANN201
+    from starlette.responses import JSONResponse
+
+    try:
+        return JSONResponse(_ok(await remote_manager().mobile_dashboard(_bearer_token(request))))
+    except Exception as exc:
+        return _error(str(exc), type(exc).__name__, 401)
+
+
 async def poll_endpoint(request: Any):  # noqa: ANN201
     from starlette.responses import JSONResponse
 
@@ -1231,6 +1507,9 @@ def remote_routes() -> list[Any]:
         Route(f"{REMOTE_API_PREFIX}/register", register_endpoint, methods=["POST"]),
         Route(f"{REMOTE_API_PREFIX}/res" + "ume", resume_endpoint, methods=["POST"]),
         Route(f"{REMOTE_API_PREFIX}/push-token", push_token_endpoint, methods=["POST"]),
+        Route(f"{REMOTE_API_PREFIX}/events-ack", events_ack_endpoint, methods=["POST"]),
+        Route(f"{REMOTE_API_PREFIX}/worker-event", worker_event_endpoint, methods=["POST"]),
+        Route(f"{REMOTE_API_PREFIX}/mobile-dashboard", mobile_dashboard_endpoint, methods=["POST"]),
         Route(f"{REMOTE_API_PREFIX}/poll", poll_endpoint, methods=["POST"]),
         Route(f"{REMOTE_API_PREFIX}/heartbeat", heartbeat_endpoint, methods=["POST"]),
         Route(f"{REMOTE_API_PREFIX}/result", result_endpoint, methods=["POST"]),
@@ -2442,6 +2721,30 @@ async def _execute_worker_job_with_heartbeat(
         await asyncio.gather(heartbeat, return_exceptions=True)
 
 
+async def _worker_job_notification_loop(server: str, headers: dict[str, str]) -> None:
+    while True:
+        try:
+            events = await collect_pending_job_notifications()
+            for event in events:
+                try:
+                    response = await asyncio.to_thread(
+                        _worker_post_json,
+                        f"{server}{REMOTE_API_PREFIX}/worker-event",
+                        event,
+                        headers,
+                        20,
+                    )
+                    data = response.get("data", {}) if isinstance(response, dict) else {}
+                    if data.get("accepted"):
+                        mark_job_notification_sent(str(event.get("id") or ""))
+                except Exception as exc:  # noqa: BLE001
+                    if not _worker_error_is_retryable(exc):
+                        _worker_log_retry("job notification", exc, 5)
+        except Exception as exc:  # noqa: BLE001
+            _worker_log_retry("job notification scan", exc, 5)
+        await asyncio.sleep(5)
+
+
 async def _submit_worker_result_with_heartbeat(
     result: dict[str, Any],
     server: str,
@@ -2569,6 +2872,8 @@ async def _run_worker_locked(
         flush=True,
     )
     headers = {"Author" + "ization": "B" + "earer " + access}
+    job_notification_task = asyncio.create_task(_worker_job_notification_loop(server, headers))
+    _ = job_notification_task
     upgrade_attempt = 0
     while True:
         poll_body = await _worker_post_json_forever(

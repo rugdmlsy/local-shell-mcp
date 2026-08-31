@@ -149,7 +149,15 @@ async def test_mcp_tool_surface_is_stable(tmp_path, monkeypatch):
         "clipboard_read",
         "shared_inbox_import",
         "approval_prompt",
+        "device_status",
+        "sensor_snapshot",
+        "last_scanned_code",
+        "send_to_mobile",
+        "inbox_list",
     } <= mobile_actions
+    mobile_props = tools["mobile_action"].inputSchema["properties"]
+    assert mobile_props["defer_if_offline"]["default"] is False
+    assert mobile_props["defer_ttl_s"]["default"] == 86400
 
 
 @pytest.mark.asyncio

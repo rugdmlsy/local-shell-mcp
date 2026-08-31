@@ -113,6 +113,27 @@ struct LSMHTTPClient {
         )
     }
 
+    func acknowledgeEvents(identity: WorkerIdentity, ids: [String]) async throws {
+        guard !ids.isEmpty else { return }
+        _ = try await post(
+            server: identity.server,
+            path: "/remote/events-ack",
+            payload: ["ids": ids],
+            token: identity.token,
+            timeout: 15
+        )
+    }
+
+    func dashboard(identity: WorkerIdentity) async throws -> [String: Any] {
+        try await post(
+            server: identity.server,
+            path: "/remote/mobile-dashboard",
+            payload: [:],
+            token: identity.token,
+            timeout: 15
+        )
+    }
+
     private func settings(from data: [String: Any]) -> WorkerSessionSettings {
         WorkerSessionSettings(
             pollTimeout: (data["poll_timeout_s"] as? NSNumber)?.doubleValue ?? 20,
@@ -266,6 +287,19 @@ final class WorkerViewModel: ObservableObject {
         detail = granted ? "Photo Library permission granted." : "Photo Library permission was not granted."
     }
 
+    func refreshDashboard() async {
+        guard let identity else {
+            ControllerDashboardStore.shared.fail("Pair this iPhone with the LSM controller first.")
+            return
+        }
+        ControllerDashboardStore.shared.beginLoading()
+        do {
+            ControllerDashboardStore.shared.apply(try await http.dashboard(identity: identity))
+        } catch {
+            ControllerDashboardStore.shared.fail(error.localizedDescription)
+        }
+    }
+
     #if LSM_SHARE_EXTENSION
     func importSharedInbox() {
         do {
@@ -321,6 +355,12 @@ final class WorkerViewModel: ObservableObject {
                             pollTimeout: timeout,
                             heartbeatInterval: sessionSettings.heartbeatInterval
                         )
+                    }
+                    if let events = payload["events"] as? [[String: Any]], !events.isEmpty {
+                        let ids = await MobileEventStore.shared.process(events)
+                        if !ids.isEmpty {
+                            try? await http.acknowledgeEvents(identity: identity, ids: ids)
+                        }
                     }
                     if let upgrade = payload["upgrade"] as? [String: Any], upgrade["required"] as? Bool == true {
                         throw WorkerClientError.unsupportedUpgrade

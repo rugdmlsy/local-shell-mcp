@@ -775,7 +775,7 @@ When `machine` is supplied, the call additionally requires `remote:use` and runs
 
 ### `mobile_action`
 
-Run one native action on an LSM mobile worker. Permission-gated camera/photos actions never prompt remotely; approval_prompt requires the app foreground and returns only the human decision; network probes are bounded; sandbox file actions stay under the app-managed LSM root.
+Run one native action on an LSM mobile worker. Permission-gated camera/photos actions never prompt remotely; approval_prompt requires the app foreground and returns only the human decision; network probes are bounded; scanner activation is local-only. notify and send_to_mobile may be deferred until the iPhone next polls by setting defer_if_offline=true.
 
 | Parameter | Type | Required/default | Description |
 |---|---|---|---|
@@ -783,6 +783,8 @@ Run one native action on an LSM mobile worker. Permission-gated camera/photos ac
 | `action` | `string` | required |  |
 | `arguments` | `object \| null` | `null` |  |
 | `timeout_s` | `integer` | `30` |  |
+| `defer_if_offline` | `boolean` | `false` |  |
+| `defer_ttl_s` | `integer` | `86400` |  |
 | `logical_session_id` | `string \| null` | required | Logical Session for this tool call. Pass the session_id returned by session_manage while working in that task. Use null only when no Logical Session is active. This is the same durable session_id used by session_manage. |
 
 OAuth scopes: `shell:read, shell:write, shell:execute, browser:use, file:share, remote:use`.

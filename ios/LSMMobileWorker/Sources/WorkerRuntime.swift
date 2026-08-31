@@ -129,6 +129,12 @@ final class WorkerBackgroundCoordinator {
                     identity: identity,
                     pollTimeout: min(5, max(1, remaining - 1))
                 )
+                if let events = payload["events"] as? [[String: Any]], !events.isEmpty {
+                    let ids = await MobileEventStore.shared.process(events)
+                    if !ids.isEmpty {
+                        try? await http.acknowledgeEvents(identity: identity, ids: ids)
+                    }
+                }
                 if let upgrade = payload["upgrade"] as? [String: Any],
                    upgrade["required"] as? Bool == true {
                     throw WorkerClientError.unsupportedUpgrade

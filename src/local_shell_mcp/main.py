@@ -6,7 +6,8 @@ import sys
 
 
 def _with_oauth_routes(inner_app, mcp=None):  # noqa: ANN001
-    from contextlib import asynccontextmanager
+    import asyncio
+    from contextlib import asynccontextmanager, suppress
 
     from starlette.applications import Starlette
     from starlette.responses import JSONResponse
@@ -29,7 +30,20 @@ def _with_oauth_routes(inner_app, mcp=None):  # noqa: ANN001
     @asynccontextmanager
     async def lifespan(app):  # noqa: ANN001
         async with inner_app.router.lifespan_context(inner_app):
-            yield
+            notification_task = None
+            if get_settings().remote_enabled:
+                from .notification_runtime import notification_watchdog_loop
+
+                notification_task = asyncio.create_task(
+                    notification_watchdog_loop(), name="lsm-notification-watchdog"
+                )
+            try:
+                yield
+            finally:
+                if notification_task is not None:
+                    notification_task.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await notification_task
 
     routes = [
         Route("/healthz", lambda request: JSONResponse({"ok": True}), methods=["GET"]),

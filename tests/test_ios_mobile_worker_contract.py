@@ -6,6 +6,10 @@ TRANSFER_EXECUTOR = IOS_ROOT / "Sources" / "MobileTransferExecutor.swift"
 ACTION_EXECUTOR = IOS_ROOT / "Sources" / "MobileActionExecutor.swift"
 CONTENT_VIEW = IOS_ROOT / "Sources" / "ContentView.swift"
 PROJECT_SPEC = IOS_ROOT / "project.yml"
+WORKER_CLIENT = IOS_ROOT / "Sources" / "WorkerClient.swift"
+WORKER_RUNTIME = IOS_ROOT / "Sources" / "WorkerRuntime.swift"
+SCANNER = IOS_ROOT / "Sources" / "CodeScanner.swift"
+APP_INTENTS = IOS_ROOT / "Sources" / "LSMAppIntents.swift"
 
 
 def test_ios_worker_dispatches_controller_transfer_wire_tools() -> None:
@@ -41,6 +45,40 @@ def test_ios_worker_dispatches_phase3_mobile_actions() -> None:
     }
     missing = sorted(action for action in required if f'case "{action}":' not in source)
     assert not missing, f"iOS worker is missing Phase 3 mobile actions: {missing}"
+
+
+def test_ios_worker_dispatches_phase4_mobile_actions() -> None:
+    source = ACTION_EXECUTOR.read_text(encoding="utf-8")
+    required = {
+        "device_status",
+        "sensor_snapshot",
+        "last_scanned_code",
+        "send_to_mobile",
+        "inbox_list",
+    }
+    missing = sorted(action for action in required if f'case "{action}":' not in source)
+    assert not missing, f"iOS worker is missing Phase 4 mobile actions: {missing}"
+
+
+def test_phase4_controller_events_use_authenticated_poll_ack_and_dashboard_routes() -> None:
+    client = WORKER_CLIENT.read_text(encoding="utf-8")
+    runtime = WORKER_RUNTIME.read_text(encoding="utf-8")
+    assert 'path: "/remote/events-ack"' in client
+    assert 'path: "/remote/mobile-dashboard"' in client
+    assert 'payload["events"]' in client
+    assert 'payload["events"]' in runtime
+
+
+def test_qr_scanner_remains_local_user_initiated() -> None:
+    content = CONTENT_VIEW.read_text(encoding="utf-8")
+    executor = ACTION_EXECUTOR.read_text(encoding="utf-8")
+    scanner = SCANNER.read_text(encoding="utf-8")
+    intents = APP_INTENTS.read_text(encoding="utf-8")
+    assert 'Button("Scan QR / Barcode")' in content
+    assert "startLocalScan()" in content
+    assert "startLocalScan()" not in executor
+    assert "AVCaptureMetadataOutput" in scanner
+    assert "openAppWhenRun: Bool = true" in intents
 
 
 def test_ios_privacy_sensitive_phase3_controls_are_local_opt_in() -> None:

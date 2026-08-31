@@ -45,6 +45,11 @@ final class MobileActionExecutor {
             "mobile.approval",
             "mobile.external_files",
             "mobile.clipboard",
+            "mobile.device_status",
+            "mobile.sensors",
+            "mobile.code_scanner",
+            "mobile.inbox",
+            "mobile.controller_dashboard",
         ]
         #if LSM_PUSH_NOTIFICATIONS
         values.append("mobile.background_wake")
@@ -61,6 +66,9 @@ final class MobileActionExecutor {
     private let transferExecutor = MobileTransferExecutor()
     private let externalFiles = ExternalFileAccessManager.shared
     private let clipboard = MobileClipboardProvider.shared
+    private let deviceProvider = MobileDeviceProvider()
+    private let codeScanner = CodeScannerCoordinator.shared
+    private let inbox = MobileInboxStore.shared
     private let fileManager = FileManager.default
     private let maxReadBytes = 512 * 1024
     private let maxWriteBytes = 5 * 1024 * 1024
@@ -132,6 +140,25 @@ final class MobileActionExecutor {
             return Self.workerInfo().merging(Self.resourceSnapshot()) { _, new in new }
         case "battery":
             return batteryInfo()
+        case "device_status":
+            return deviceProvider.status()
+        case "sensor_snapshot":
+            return try await deviceProvider.sensorSnapshot(arguments)
+        case "last_scanned_code":
+            return codeScanner.lastInfo()
+        case "send_to_mobile":
+            let item = try inbox.receive(arguments)
+            let shouldNotify = (arguments["notify"] as? Bool) ?? true
+            var scheduled = false
+            if shouldNotify {
+                scheduled = (try? await notify([
+                    "title": item.title,
+                    "body": item.text ?? item.url ?? item.path ?? "New LSM Inbox item",
+                ])) != nil
+            }
+            return ["id": item.id, "kind": item.kind, "stored": true, "notification_scheduled": scheduled]
+        case "inbox_list":
+            return inbox.listInfo()
         case "notify":
             return try await notify(arguments)
         case "location":
@@ -209,6 +236,9 @@ final class MobileActionExecutor {
             "background_wake": PushRegistrationStore.status(),
             "external_files": externalFiles.list(),
             "clipboard": clipboard.status(),
+            "device_status": deviceProvider.status(),
+            "last_scanned_code": codeScanner.lastInfo(),
+            "inbox": ["count": inbox.items.count, "unread_count": inbox.items.filter { !$0.read }.count],
         ]
         #if LSM_SHARE_EXTENSION
         result["share_inbox_pending"] = SharedInboxImporter.shared.pendingCount()

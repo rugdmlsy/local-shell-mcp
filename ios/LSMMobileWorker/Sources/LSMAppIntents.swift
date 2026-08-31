@@ -47,6 +47,46 @@ struct OpenLSMWorkerIntent: AppIntent {
     }
 }
 
+struct LSMSaveTextIntent: AppIntent {
+    static var title: LocalizedStringResource = "Save Text to LSM Inbox"
+    static var description = IntentDescription("Store text in the local LSM mobile inbox for later use without sending it to another service.")
+
+    @Parameter(title: "Text") var text: String
+
+    func perform() async throws -> some IntentResult & ProvidesDialog {
+        let item = try await MainActor.run {
+            try MobileInboxStore.shared.receive([
+                "kind": "text",
+                "title": "Shortcut",
+                "text": text,
+            ])
+        }
+        return .result(dialog: IntentDialog(stringLiteral: "Saved to LSM Inbox as \(item.title)."))
+    }
+}
+
+struct OpenLSMScannerIntent: AppIntent {
+    static var title: LocalizedStringResource = "Open LSM Code Scanner"
+    static var description = IntentDescription("Open LSM Worker and start its local QR/barcode scanner after camera permission has already been granted.")
+    static var openAppWhenRun: Bool = true
+
+    func perform() async throws -> some IntentResult {
+        UserDefaults.standard.set(true, forKey: "mobile.intent.open_scanner")
+        return .result()
+    }
+}
+
+struct LSMLastScannedCodeIntent: AppIntent {
+    static var title: LocalizedStringResource = "Last LSM Scanned Code"
+    static var description = IntentDescription("Return the most recent QR or barcode scanned locally in LSM Worker.")
+
+    func perform() async throws -> some IntentResult & ProvidesDialog {
+        let scan = await MainActor.run { CodeScannerCoordinator.shared.lastScan }
+        let message = scan?.value ?? "No code has been scanned yet."
+        return .result(dialog: IntentDialog(stringLiteral: message))
+    }
+}
+
 struct LSMWorkerShortcuts: AppShortcutsProvider {
     static var appShortcuts: [AppShortcut] {
         AppShortcut(
@@ -72,6 +112,24 @@ struct LSMWorkerShortcuts: AppShortcutsProvider {
             phrases: ["Open \(.applicationName)"],
             shortTitle: "Open Worker",
             systemImageName: "iphone"
+        )
+        AppShortcut(
+            intent: LSMSaveTextIntent(),
+            phrases: ["Save text to \(.applicationName)"],
+            shortTitle: "Save to Inbox",
+            systemImageName: "tray.and.arrow.down"
+        )
+        AppShortcut(
+            intent: OpenLSMScannerIntent(),
+            phrases: ["Scan a code with \(.applicationName)"],
+            shortTitle: "Scan Code",
+            systemImageName: "qrcode.viewfinder"
+        )
+        AppShortcut(
+            intent: LSMLastScannedCodeIntent(),
+            phrases: ["Last code from \(.applicationName)"],
+            shortTitle: "Last Scanned Code",
+            systemImageName: "qrcode.viewfinder"
         )
     }
 }

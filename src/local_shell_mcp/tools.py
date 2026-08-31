@@ -3405,6 +3405,11 @@ def _register_remote_admin_tools(mcp: FastMCP) -> None:
             "capabilities",
             "device_info",
             "battery",
+            "device_status",
+            "sensor_snapshot",
+            "last_scanned_code",
+            "send_to_mobile",
+            "inbox_list",
             "notify",
             "location",
             "open_url",
@@ -3432,8 +3437,10 @@ def _register_remote_admin_tools(mcp: FastMCP) -> None:
         ],
         arguments: dict[str, Any] | None = None,
         timeout_s: int = 30,
+        defer_if_offline: bool = False,
+        defer_ttl_s: int = 86_400,
     ) -> ToolResult:
-        """Run one native action on an LSM mobile worker. Permission-gated camera/photos actions never prompt remotely; approval_prompt requires the app foreground and returns only the human decision; network probes are bounded; sandbox file actions stay under the app-managed LSM root."""
+        """Run one native action on an LSM mobile worker. Permission-gated camera/photos actions never prompt remotely; approval_prompt requires the app foreground and returns only the human decision; network probes are bounded; scanner activation is local-only. notify and send_to_mobile may be deferred until the iPhone next polls by setting defer_if_offline=true."""
         try:
             manager = remote_manager()
             rows = manager.list_machines().get("machines", [])
@@ -3443,6 +3450,36 @@ def _register_remote_admin_tools(mcp: FastMCP) -> None:
             capabilities = set(worker.get("capabilities") or [])
             if "mobile" not in capabilities:
                 raise ValueError(f"remote machine is not a mobile worker: {machine}")
+            should_defer = defer_if_offline and (
+                worker.get("status") != "online"
+                or str((worker.get("info") or {}).get("app_state") or "") != "active"
+            )
+            if should_defer:
+                if action not in {"notify", "send_to_mobile"}:
+                    raise ValueError("defer_if_offline is supported only for notify and send_to_mobile")
+                payload = dict(arguments or {})
+                if action == "notify":
+                    title = str(payload.get("title") or "LSM")
+                    body = str(payload.get("body") or "Deferred LSM notification")
+                    event_type = "notification"
+                    data = {}
+                else:
+                    title = str(payload.get("title") or "LSM Inbox")
+                    kind = str(payload.get("kind") or "text")
+                    body = str(payload.get("text") or payload.get("url") or payload.get("path") or f"New {kind} item")[:500]
+                    event_type = "mobile_delivery"
+                    data = payload
+                result = await manager.queue_mobile_event(
+                    event_id="evt_" + uuid.uuid4().hex,
+                    event_type=event_type,
+                    title=title,
+                    body=body,
+                    data=data,
+                    machine=machine,
+                    ttl_s=defer_ttl_s,
+                    wake_reason="deferred_delivery",
+                )
+                return _ok({"queued": True, **result})
             return await _remote_call(
                 get_settings(),
                 machine,

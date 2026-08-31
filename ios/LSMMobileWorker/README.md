@@ -35,6 +35,23 @@ Camera and Photo Library permission prompts are only initiated by explicit butto
 
 Active probes reject localhost, `.local`, private, loopback, link-local, ULA, and CGNAT destinations. Hostnames are resolved first and rejected if they resolve to a local/private address before an active connection is attempted. This keeps ordinary remote jobs from implicitly crossing the iOS Local Network privacy boundary and avoids a simple DNS-rebinding bypass.
 
+### Device status, sensors, and local code scanner
+
+- `device_status`: storage capacity/availability, thermal state, uptime, display metrics, locale/timezone, battery and power state.
+- `sensor_snapshot`: one bounded foreground sample of accelerometer, gyroscope, magnetometer, gravity, user acceleration, and device attitude when those sensors are available.
+- `last_scanned_code`: return the most recent QR/barcode result captured locally in the app.
+
+QR/barcode scanning is deliberately different from `camera_capture`: a remote caller cannot start the scanner. The user must tap **Scan QR / Barcode** in LSM Worker or invoke the scanner Shortcut, both of which foreground the app. The controller may only read the last saved scan result.
+
+### Mobile inbox and controller dashboard
+
+- `send_to_mobile`: deliver bounded text, an HTTP/HTTPS URL, or a file already present in `Documents/LSM` into the phone's local LSM Inbox.
+- `inbox_list`: inspect the bounded local inbox.
+- The app has read-only **Machines & active jobs**, **LSM Inbox**, and **Controller Events** screens.
+- The dashboard uses the worker's existing bearer identity and returns sanitized status/job metadata; it does not expose shell commands, output, controller OAuth credentials, or other worker credentials.
+
+`notify` and `send_to_mobile` support controller-side deferred delivery. When the iPhone is suspended/offline and `defer_if_offline=true`, the controller stores a bounded, TTL-limited event and hands it to the authenticated iOS poll channel when the app next wakes. Event IDs are acknowledged and durably deduplicated so reconnects do not replay the same notification indefinitely.
+
 ### Approval terminal
 
 - `approval_prompt`: display a foreground-only native approval sheet with a bounded title, summary, details, and `low`/`medium`/`high`/`critical` risk level.
@@ -92,13 +109,16 @@ The current Personal Development Team cannot provision the App Groups entitlemen
 
 ## App Intents / Shortcuts
 
-The app contributes three Shortcuts/Siri actions:
+The app contributes Shortcuts/Siri actions for:
 
 - **Check In LSM Worker**: run one bounded controller check-in and process immediately available work.
 - **LSM Worker Status**: report whether the device is paired and its most recent worker state.
 - **Open LSM Worker**: foreground the app.
+- **Save Text to LSM Inbox**: put Shortcut input into the local mobile inbox.
+- **Open LSM Code Scanner**: foreground LSM Worker and start the locally initiated scanner after Camera permission was already granted.
+- **Last LSM Scanned Code**: return the last locally scanned QR/barcode value.
 
-The intents reuse the same Keychain identity and job runtime as foreground polling; they do not expose or duplicate the bearer token.
+The intents reuse the same Keychain identity and job runtime as foreground polling; they do not expose or duplicate the bearer token and do not silently request new privacy permissions.
 
 ## Background availability
 
@@ -130,7 +150,17 @@ The current development account used for this app is a Personal Team. Apple does
 - `Debug` / `Release`: no `aps-environment`; works with the current Personal Team. BGAppRefresh and all foreground/native capabilities remain available.
 - `PushDebug`: compiles APNs registration and applies `Sources/LSMMobileWorker.entitlements`. Use this only after selecting a paid/push-capable Apple Developer team.
 
-The controller preserves its old offline behavior when APNs is absent: it does not queue work indefinitely for a sleeping phone.
+Ordinary remote jobs preserve the old offline behavior when APNs is absent: they are not queued indefinitely for a sleeping phone. Phase 4's explicit deferred `notify` / `send_to_mobile` path is different: those small controller events may be persisted until their bounded TTL and are delivered on the next authenticated phone poll. Without APNs, delivery therefore waits until iOS grants background runtime or the user reopens the app.
+
+## Agent-interruption and job-completion notifications
+
+LSM cannot observe ChatGPT's exact platform-side per-turn execution budget and does not receive an official "turn timeout" callback. The controller therefore does **not** claim to know the platform countdown.
+
+For an active Goal, LSM already maintains its own 15-minute execution lease (`PLAN_EXECUTION_LEASE_S = 900`). Phase 4 runs an independent controller watchdog: when a Goal is still unfinished, has no in-flight tool calls, and crosses that lease without fresh agent activity, the controller queues an `agent_interrupted_or_expired` event for mobile workers. The notification explicitly says that the ChatGPT turn **may** have been interrupted and that auto-continuation is due. If the configured continuation budget is exhausted while work remains, a separate attention event is queued.
+
+Tracked shell jobs are deterministic. `job_start(..., notify_on_finish=true)` now produces a stable `job_completed` event when that attempt reaches a terminal state; the controller/mobile pipeline acknowledges and deduplicates it. New remote Mac/Linux workers forward their opt-in completion events independently of the ChatGPT turn, so the notification can still be generated after the original assistant execution has stopped. Historical jobs created before this delivery mechanism are not replayed on upgrade.
+
+With the current Personal Team build, these events are durable but cannot APNs-wake a fully suspended iPhone. If the app is foreground/polling they normally arrive within one poll cycle; otherwise they appear when the app next receives background runtime or is opened. A future push-capable Developer Team can use the already implemented APNs wake path for lower-latency delivery.
 
 ## Pairing
 
@@ -153,6 +183,9 @@ The current deployment uses `https://mcp.xycdev.com` as the phone-reachable cont
 - Camera capture also requires the app to be foregrounded.
 - `open_url` accepts only HTTP/HTTPS.
 - Network probes are bounded and avoid private/local destinations by default.
+- QR/barcode capture can only be initiated locally; remote actions can only read the last result.
+- Deferred controller events are bounded, TTL-limited, acknowledged, and deduplicated.
+- Session-interruption notifications are based on LSM's own 15-minute Goal lease and never claim access to ChatGPT's private platform timer.
 - The app advertises no shell, Python, Playwright, package, service-management, or restart capability.
 - APNs device tokens are persisted by the controller but are not returned from `remote_manage(list)`.
 
@@ -192,4 +225,4 @@ xcodebuild \
 
 A signed share-enabled build requires a provisioning team that supports App Groups. `PushDebug` on the share-enabled target additionally requires Push Notifications.
 
-For a physical iPhone with the current Personal Team, build/install the normal `LSMMobileWorker` `Debug` configuration. The Phase 3 app version is `0.3.0`.
+For a physical iPhone with the current Personal Team, build/install the normal `LSMMobileWorker` `Debug` configuration. The Phase 4 app version is `0.4.0`.
