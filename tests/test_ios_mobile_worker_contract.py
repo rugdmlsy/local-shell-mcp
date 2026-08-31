@@ -49,6 +49,7 @@ def test_ios_worker_dispatches_phase3_mobile_actions() -> None:
 
 def test_ios_worker_dispatches_phase4_mobile_actions() -> None:
     source = ACTION_EXECUTOR.read_text(encoding="utf-8")
+    assert '"mobile.controller_events"' in source
     required = {
         "device_status",
         "sensor_snapshot",

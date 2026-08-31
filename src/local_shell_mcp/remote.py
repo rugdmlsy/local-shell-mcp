@@ -994,7 +994,10 @@ class RemoteManager:
             if protocol_version:
                 worker.info["poll_protocol_version"] = protocol_version
             worker.info["supports_self_update"] = supports_self_update
-            mobile_events = self._mobile_events_snapshot_locked(worker)
+            supports_mobile_events = "mobile.controller_events" in set(worker.capabilities)
+            mobile_events = (
+                self._mobile_events_snapshot_locked(worker) if supports_mobile_events else []
+            )
         if upgrade and upgrade["required"]:
             response = {
                 "job": None,
@@ -1017,7 +1020,9 @@ class RemoteManager:
             remaining = deadline - loop.time()
             if remaining <= 0:
                 with self._state_lock:
-                    mobile_events = self._mobile_events_snapshot_locked(worker)
+                    mobile_events = (
+                        self._mobile_events_snapshot_locked(worker) if supports_mobile_events else []
+                    )
                 response = {
                     "job": None,
                     "heartbeat": True,
@@ -1031,7 +1036,9 @@ class RemoteManager:
                 job = await asyncio.wait_for(worker.queue.get(), timeout=remaining)
             except TimeoutError:
                 with self._state_lock:
-                    mobile_events = self._mobile_events_snapshot_locked(worker)
+                    mobile_events = (
+                        self._mobile_events_snapshot_locked(worker) if supports_mobile_events else []
+                    )
                 response = {
                     "job": None,
                     "heartbeat": True,
@@ -1049,7 +1056,9 @@ class RemoteManager:
                     continue
                 self.claimed_jobs.add(job_id)
             with self._state_lock:
-                mobile_events = self._mobile_events_snapshot_locked(worker)
+                mobile_events = (
+                    self._mobile_events_snapshot_locked(worker) if supports_mobile_events else []
+                )
             response = {
                 "job": job,
                 "upgrade": upgrade,

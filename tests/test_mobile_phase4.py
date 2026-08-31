@@ -17,7 +17,9 @@ async def test_mobile_events_persist_poll_ack_and_deduplicate(tmp_path, monkeypa
 
     manager = remote.RemoteManager()
     manager._registry_loaded = True
-    worker = remote.RemoteWorker("iphone", "token-ios", capabilities=["mobile"])
+    worker = remote.RemoteWorker(
+        "iphone", "token-ios", capabilities=["mobile", "mobile.controller_events"]
+    )
     manager.workers[worker.name] = worker
     manager.tokens[worker.token] = worker.name
     monkeypatch.setattr(manager, "_wake_is_configured", lambda _worker: False)
@@ -55,6 +57,35 @@ async def test_mobile_events_persist_poll_ack_and_deduplicate(tmp_path, monkeypa
     restored = reloaded.workers["iphone"]
     assert restored.pending_events == []
     assert "event-one" in restored.recent_event_ids
+
+
+@pytest.mark.asyncio
+async def test_legacy_mobile_worker_pending_events_do_not_starve_jobs(tmp_path, monkeypatch):
+    monkeypatch.setenv("LOCAL_SHELL_MCP_WORKSPACE_ROOT", str(tmp_path))
+    monkeypatch.setenv("LOCAL_SHELL_MCP_STATE_DIR", str(tmp_path / ".state"))
+    get_settings.cache_clear()
+
+    manager = remote.RemoteManager()
+    manager._registry_loaded = True
+    worker = remote.RemoteWorker("iphone", "token-ios", capabilities=["mobile"])
+    manager.workers[worker.name] = worker
+    manager.tokens[worker.token] = worker.name
+    monkeypatch.setattr(manager, "_wake_is_configured", lambda _worker: False)
+
+    await manager.queue_mobile_event(
+        event_id="event-for-new-worker",
+        event_type="notification",
+        title="Deferred until upgrade",
+        body="Legacy workers must keep receiving normal jobs.",
+        machine="iphone",
+    )
+    worker.queue.put_nowait({"id": "job-battery", "tool": "mobile_action", "args": {}})
+
+    polled = await manager.poll(worker.token, {"supports_self_update": False})
+
+    assert polled["job"]["id"] == "job-battery"
+    assert "events" not in polled
+    assert [event["id"] for event in worker.pending_events] == ["event-for-new-worker"]
 
 
 @pytest.mark.asyncio

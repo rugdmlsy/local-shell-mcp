@@ -49,6 +49,7 @@ final class MobileActionExecutor {
             "mobile.sensors",
             "mobile.code_scanner",
             "mobile.inbox",
+            "mobile.controller_events",
             "mobile.controller_dashboard",
         ]
         #if LSM_PUSH_NOTIFICATIONS
