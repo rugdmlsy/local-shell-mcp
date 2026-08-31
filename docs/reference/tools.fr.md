@@ -116,7 +116,7 @@ OAuth scopes: `shell:read, shell:write, shell:execute, browser:use, file:share, 
 
 ### `plan_manage`
 
-Gère le Goal mode facultatif de la Logical Session explicite. Un plan actif déclenche la continuation automatique après 15 minutes sans activité de l’agent, dans la limite de 10 tentatives. session_id doit être le même identifiant durable renvoyé par session_manage. Actions : start, get, update, block, resume, finish, cancel. start exige objective et steps ; finish exige que tous les steps soient completed ou skipped.
+Gère le Goal mode facultatif de la Logical Session explicite. Un plan actif déclenche la continuation automatique après 30 minutes sans activité de l’agent, dans la limite de 10 tentatives. session_id doit être le même identifiant durable renvoyé par session_manage. Actions : start, get, update, block, resume, finish, cancel. start exige objective et steps ; finish exige que tous les steps soient completed ou skipped.
 
 | Paramètre | Type | Requis/default | Description |
 |---|---|---|---|

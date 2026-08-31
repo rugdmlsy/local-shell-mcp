@@ -3149,7 +3149,7 @@ def _register_maintenance_tools(mcp: FastMCP, read_only_tool: ToolAnnotations) -
         text: str | None = None,
         note: str | None = None,
     ) -> ToolResult:
-        """Manage optional Goal mode for the explicit Logical Session. An active plan enables automatic continuation after 15 minutes without agent activity, capped at 10 continuation attempts. session_id must be the same durable id returned by session_manage. Actions: start, get, update, block, resume, finish, cancel. start requires objective and steps; finish requires every step to be completed or skipped."""
+        """Manage optional Goal mode for the explicit Logical Session. An active plan enables automatic continuation after 30 minutes without agent activity, capped at 10 continuation attempts. session_id must be the same durable id returned by session_manage. Actions: start, get, update, block, resume, finish, cancel. start requires objective and steps; finish requires every step to be completed or skipped."""
         return await _tool_call(
             asyncio.to_thread,
             get_session_runtime_manager().manage_plan,

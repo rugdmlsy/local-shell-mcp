@@ -156,7 +156,7 @@ Ordinary remote jobs preserve the old offline behavior when APNs is absent: they
 
 LSM cannot observe ChatGPT's exact platform-side per-turn execution budget and does not receive an official "turn timeout" callback. The controller therefore does **not** claim to know the platform countdown.
 
-For an active Goal, LSM already maintains its own 15-minute execution lease (`PLAN_EXECUTION_LEASE_S = 900`). Phase 4 runs an independent controller watchdog: when a Goal is still unfinished, has no in-flight tool calls, and crosses that lease without fresh agent activity, the controller queues an `agent_interrupted_or_expired` event for mobile workers. The notification explicitly says that the ChatGPT turn **may** have been interrupted and that auto-continuation is due. If the configured continuation budget is exhausted while work remains, a separate attention event is queued.
+For an active Goal, LSM already maintains its own 30-minute execution lease (`PLAN_EXECUTION_LEASE_S = 900`). Phase 4 runs an independent controller watchdog: when a Goal is still unfinished, has no in-flight tool calls, and crosses that lease without fresh agent activity, the controller queues an `agent_interrupted_or_expired` event for mobile workers. The notification explicitly says that the ChatGPT turn **may** have been interrupted and that auto-continuation is due. If the configured continuation budget is exhausted while work remains, a separate attention event is queued.
 
 Tracked shell jobs are deterministic. `job_start(..., notify_on_finish=true)` now produces a stable `job_completed` event when that attempt reaches a terminal state; the controller/mobile pipeline acknowledges and deduplicates it. New remote Mac/Linux workers forward their opt-in completion events independently of the ChatGPT turn, so the notification can still be generated after the original assistant execution has stopped. Historical jobs created before this delivery mechanism are not replayed on upgrade.
 
@@ -185,7 +185,7 @@ The current deployment uses `https://mcp.xycdev.com` as the phone-reachable cont
 - Network probes are bounded and avoid private/local destinations by default.
 - QR/barcode capture can only be initiated locally; remote actions can only read the last result.
 - Deferred controller events are bounded, TTL-limited, acknowledged, and deduplicated.
-- Session-interruption notifications are based on LSM's own 15-minute Goal lease and never claim access to ChatGPT's private platform timer.
+- Session-interruption notifications are based on LSM's own 30-minute Goal lease and never claim access to ChatGPT's private platform timer.
 - The app advertises no shell, Python, Playwright, package, service-management, or restart capability.
 - APNs device tokens are persisted by the controller but are not returned from `remote_manage(list)`.
 

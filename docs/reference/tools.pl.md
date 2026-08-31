@@ -116,7 +116,7 @@ OAuth scopes: `shell:read, shell:write, shell:execute, browser:use, file:share, 
 
 ### `plan_manage`
 
-Zarządza opcjonalnym Goal mode dla jawnej Logical Session. Aktywny plan włącza automatyczną kontynuację po 15 minutach bez aktywności agenta, maksymalnie 10 prób. session_id musi być tym samym trwałym identyfikatorem zwróconym przez session_manage. Akcje: start, get, update, block, resume, finish, cancel. start wymaga objective i steps; finish wymaga, aby wszystkie steps były completed lub skipped.
+Zarządza opcjonalnym Goal mode dla jawnej Logical Session. Aktywny plan włącza automatyczną kontynuację po 30 minutach bez aktywności agenta, maksymalnie 10 prób. session_id musi być tym samym trwałym identyfikatorem zwróconym przez session_manage. Akcje: start, get, update, block, resume, finish, cancel. start wymaga objective i steps; finish wymaga, aby wszystkie steps były completed lub skipped.
 
 | Parameter | Type | Required/default | Description |
 |---|---|---|---|
