@@ -24,6 +24,18 @@ The app advertises `mobile` plus capability-specific identifiers and receives bo
 
 Camera and Photo Library permission prompts are only initiated by explicit buttons in the app. A remote job never triggers a new privacy prompt.
 
+### Local LAN proxy discovery
+
+The **Tools → LAN Proxy** screen is a local-only utility and is not an LSM remote capability. It:
+
+- derives a bounded scan scope from the iPhone's active Wi-Fi IPv4 interface; scans at most the containing `/24`;
+- checks common Clash/Mihomo HTTP/SOCKS5 ports in stages rather than scanning all 65,535 ports;
+- verifies SOCKS5 with a real SOCKS CONNECT and HTTP proxies with a real HTTP CONNECT to `cp.cloudflare.com:443`;
+- caches the last verified endpoint per LAN scan scope and rechecks it before starting a new scan;
+- supports manual host/port verification and copying `http://` / `socks5://` endpoint URLs.
+
+The feature is deliberately independent from the controller and cannot be started remotely. It requires iOS Local Network permission. Saving an endpoint does not alter iOS system-wide Wi-Fi proxy settings; the current Personal Team build does not include a Network Extension entitlement.
+
 ### Mobile network vantage point
 
 - `network_status`: report the current `NWPath` state, active interface class (Wi-Fi/cellular/etc.), expensive/constrained status, IPv4/IPv6 and DNS support.
@@ -225,4 +237,4 @@ xcodebuild \
 
 A signed share-enabled build requires a provisioning team that supports App Groups. `PushDebug` on the share-enabled target additionally requires Push Notifications.
 
-For a physical iPhone with the current Personal Team, build/install the normal `LSMMobileWorker` `Debug` configuration. The Phase 4 app version is `0.4.4`. `mobile.controller_events` is an explicit capability marker; controllers must not deliver event/ACK poll extensions to older iOS workers that do not advertise it.
+For a physical iPhone with the current Personal Team, build/install the normal `LSMMobileWorker` `Debug` configuration. The app version is `0.4.5`. `mobile.controller_events` is an explicit capability marker; controllers must not deliver event/ACK poll extensions to older iOS workers that do not advertise it.

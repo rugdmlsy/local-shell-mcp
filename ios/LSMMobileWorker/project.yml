@@ -12,7 +12,7 @@ settings:
     SWIFT_VERSION: "5.0"
     SWIFT_STRICT_CONCURRENCY: minimal
     CURRENT_PROJECT_VERSION: 1
-    MARKETING_VERSION: 0.4.4
+    MARKETING_VERSION: 0.4.5
 
 targets:
   LSMMobileWorker:
@@ -45,6 +45,7 @@ targets:
         NSLocationWhenInUseUsageDescription: "LSM Worker uses your location only when you explicitly allow a remote location action."
         NSCameraUsageDescription: "LSM Worker captures a still image only after you grant camera access and while the app is in the foreground."
         NSPhotoLibraryUsageDescription: "LSM Worker lists or exports photos only after you explicitly grant Photo Library access."
+        NSLocalNetworkUsageDescription: "LSM Worker scans your current Wi-Fi network only when you locally start LAN Proxy discovery."
         BGTaskSchedulerPermittedIdentifiers:
           - com.xycdev.lsmmobileworker.refresh
         UIBackgroundModes:
@@ -102,6 +103,7 @@ targets:
         NSLocationWhenInUseUsageDescription: "LSM Worker uses your location only when you explicitly allow a remote location action."
         NSCameraUsageDescription: "LSM Worker captures a still image only after you grant camera access and while the app is in the foreground."
         NSPhotoLibraryUsageDescription: "LSM Worker lists or exports photos only after you explicitly grant Photo Library access."
+        NSLocalNetworkUsageDescription: "LSM Worker scans your current Wi-Fi network only when you locally start LAN Proxy discovery."
         BGTaskSchedulerPermittedIdentifiers:
           - com.xycdev.lsmmobileworker.refresh
         UIBackgroundModes:

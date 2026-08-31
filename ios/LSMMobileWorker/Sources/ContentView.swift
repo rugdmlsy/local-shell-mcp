@@ -115,6 +115,12 @@ private struct WorkerHomeView: View {
 
             Section {
                 DisclosureGroup {
+                    NavigationLink {
+                        LANProxyDiscoveryView()
+                    } label: {
+                        Label("LAN Proxy", systemImage: "network")
+                    }
+
                     Button {
                         scanner.startLocalScan()
                     } label: {
