@@ -103,6 +103,23 @@ remote() {
   ssh "${ssh_options[@]}" "${ssh_host}" "$@"
 }
 
+establish_ssh_master() {
+  local attempt
+  local status=255
+  for attempt in 1 2 3 4 5; do
+    if ssh "${ssh_options[@]}" "${ssh_host}" true; then
+      return 0
+    else
+      status=$?
+    fi
+    test "${status}" -eq 255 || return "${status}"
+    rm -f "${ssh_control_path}" 2>/dev/null || true
+    echo "initial SSH handshake failed; retry ${attempt}/5" >&2
+    test "${attempt}" -lt 5 && sleep 3
+  done
+  return "${status}"
+}
+
 remote_guarded() {
   python3 "${script_dir}/run-command-with-timeout.py" \
     "${post_switch_ssh_deadline_s}" \
@@ -171,9 +188,14 @@ readonly local_icon="docs/assets/logo.png"
 readonly icon_bytes="$(wc -c < "${local_icon}" | tr -d ' ')"
 readonly icon_sha256="$(shasum -a 256 "${local_icon}" | awk '{print $1}')"
 test "${icon_bytes}" -lt 10240 || {
-  echo "official icon must remain below 10 KiB" >&2
+  echo "Morrow icon must remain below 10 KiB" >&2
   exit 1
 }
+
+# Establish the persistent control connection before creating/pushing a release
+# tag. Some VPS SSH daemons occasionally drop a new connection during KEX; once
+# this succeeds, all pre-switch deployment commands reuse the same master.
+establish_ssh_master
 
 if git rev-parse --verify --quiet "refs/tags/${release_tag}" >/dev/null; then
   readonly local_tag_sha="$(git rev-list -n 1 "${release_tag}")"

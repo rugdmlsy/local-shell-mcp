@@ -44,6 +44,8 @@ def test_deploy_command_keeps_release_and_rollback_guards() -> None:
         "wait_for_release_process",
         "ControlMaster=auto",
         "ControlMaster=no",
+        "establish_ssh_master",
+        "initial SSH handshake failed; retry",
         "ServerAliveInterval=5",
         "ServerAliveCountMax=2",
         "remote_fresh_guarded",
