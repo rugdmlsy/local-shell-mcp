@@ -74,7 +74,17 @@ for (const asset of ["index.html", "logo.png"]) {
 }
 const liveScriptPath = resolve(staticDir, "live-workspace.js")
 const liveStylePath = resolve(staticDir, "live-workspace.css")
-const liveScript = (await Bun.file(liveScriptPath).text()).replaceAll("</script", "<\\/script")
+const liveLogoPlaceholder = "__LSM_MORROW_LOGO_DATA_URI__"
+const liveLogoBase64 = Buffer.from(
+  await Bun.file(resolve(root, "static", "logo.png")).arrayBuffer(),
+).toString("base64")
+let liveScript = await Bun.file(liveScriptPath).text()
+if (!liveScript.includes(liveLogoPlaceholder)) {
+  throw new Error("Live Workspace Morrow logo placeholder was not emitted by the bundle")
+}
+liveScript = liveScript
+  .replaceAll(liveLogoPlaceholder, `data:image/png;base64,${liveLogoBase64}`)
+  .replaceAll("</script", "<\\/script")
 const liveStyle = (await Bun.file(liveStylePath).text()).replaceAll("</style", "<\\/style")
 const liveHtml = `<!doctype html><html><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"/><title>local-shell-mcp Live Workspace</title><style>${liveStyle}</style></head><body><script type="module">${liveScript}</script></body></html>`
   .replace(/[ \t]+$/gm, "")

@@ -31,7 +31,7 @@ from local_shell_mcp.settings import get_settings
 from local_shell_mcp.tools import build_mcp
 
 
-def test_official_icon_assets_are_identical_and_under_ten_kib():
+def test_morrow_icon_assets_are_identical_and_under_ten_kib():
     repository = Path(__file__).parents[1]
     icon_paths = [
         repository / "docs/assets/logo.png",
@@ -119,7 +119,7 @@ async def test_mcp_metadata_for_chatgpt_developer_mode(tmp_path, monkeypatch):
     assert initialization.icons
     assert (
         initialization.icons[0].src
-        == "https://raw.githubusercontent.com/rugdmlsy/local-shell-mcp/refs/heads/morrow/v4.2/docs/assets/logo.png"
+        == "https://raw.githubusercontent.com/rugdmlsy/local-shell-mcp/refs/heads/morrow/v4.3/docs/assets/logo.png"
     )
     assert initialization.icons[0].mimeType == "image/png"
     assert initialization.icons[0].sizes == ["84x84"]

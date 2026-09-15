@@ -579,7 +579,15 @@ async def upload_endpoint(request: Request) -> JSONResponse:
 
 
 def _open_download(ticket: _TransferTicket):  # noqa: ANN202
-    path = resolve_path(ticket.path, must_exist=True)
+    # Download tickets always point at controller-created immutable snapshots under
+    # state_dir/remote-transfers. They are deliberately outside workspace_root in
+    # production, so the ordinary user-path resolver must not be used here.
+    snapshot_root = (get_settings().state_dir / "remote-transfers").resolve(strict=False)
+    path = Path(ticket.path).resolve(strict=True)
+    try:
+        path.relative_to(snapshot_root)
+    except ValueError as exc:
+        raise ValueError("download snapshot escapes remote transfer state") from exc
     handle = path.open("rb")
     stat = os.fstat(handle.fileno())
     if stat.st_size != ticket.expected_bytes:

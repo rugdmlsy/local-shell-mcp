@@ -29,6 +29,31 @@ def _client(tmp_path, monkeypatch, *, request_limit: int = 1024) -> TestClient:
     app.add_middleware(RequestBodyLimitMiddleware)
     return TestClient(app)
 
+def test_stream_download_supports_state_dir_outside_workspace(tmp_path, monkeypatch):
+    workspace = tmp_path / "workspace"
+    state_dir = tmp_path / "state"
+    workspace.mkdir()
+    state_dir.mkdir()
+    monkeypatch.setenv("LOCAL_SHELL_MCP_WORKSPACE_ROOT", str(workspace))
+    monkeypatch.setenv("LOCAL_SHELL_MCP_STATE_DIR", str(state_dir))
+    monkeypatch.setenv("LOCAL_SHELL_MCP_PUBLIC_BASE_URL", "http://testserver")
+    get_settings.cache_clear()
+
+    data = b"production-layout-download"
+    source = workspace / "source.bin"
+    source.write_bytes(data)
+    digest = hashlib.sha256(data).hexdigest()
+    ticket = create_download_ticket("source.bin", len(data), digest)
+    snapshot = Path(remote_transfer._TICKETS[ticket["token"]].path)
+    assert snapshot.parent == state_dir / "remote-transfers"
+    assert workspace not in snapshot.parents
+
+    client = TestClient(Starlette(routes=remote_transfer_routes()))
+    response = client.get(ticket["url"])
+    assert response.status_code == 200
+    assert response.content == data
+
+
 
 def test_stream_upload_bypasses_json_body_limit_and_retains_status(tmp_path, monkeypatch):
     client = _client(tmp_path, monkeypatch, request_limit=1024)

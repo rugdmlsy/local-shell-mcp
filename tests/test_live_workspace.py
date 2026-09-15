@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import hashlib
 import subprocess
 import threading
@@ -58,6 +59,20 @@ def _configure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, auth: str = "
     monkeypatch.setattr(
         session_runtime_module, "_MANAGER", SessionRuntimeManager(tmp_path / ".state")
     )
+
+
+
+
+def test_live_workspace_embeds_morrow_logo_instead_of_official_svg():
+    package_root = Path(live_channel_module.__file__).resolve().parent
+    asset = package_root / "ui_static" / "live-workspace.html"
+    logo = package_root / "ui_static" / "logo.png"
+    html = asset.read_text(encoding="utf-8")
+    encoded_logo = base64.b64encode(logo.read_bytes()).decode("ascii")
+
+    assert f"data:image/png;base64,{encoded_logo}" in html
+    assert "lsm-surface" not in html
+    assert "__LSM_MORROW_LOGO_DATA_URI__" not in html
 
 
 def test_live_workspace_resource_uri_stays_stable_with_versioned_alias():
