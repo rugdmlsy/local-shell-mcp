@@ -1,4 +1,4 @@
-<!-- i18n-source-sha256: 784cf8286b0aba665f54b0b14b7467047ff618447663c4b354d92176796c4001 -->
+<!-- i18n-source-sha256: 63f9fb40c4fd1c085e87c30ed221598cccacef1a6fb4aeb2bb4f1db520590ada -->
 # Referencja tools
 
 Ta page jest budowana z rzeczywistych MCP tool schemas. Po zmianie public tool surface uruchom `python scripts/generate-tools-reference.py`, aby zaktualizować English reference.
@@ -277,11 +277,12 @@ Gdy podano `machine`, wywołanie wymaga również `remote:use` i działa przez p
 
 ### `job_list`
 
-Listuje tracked jobs lokalnie lub na remote machine.
+Listuje tracked jobs lokalnie lub na remote machine. Aktywne joby są zwracane jako pierwsze; `limit` jest ograniczany do zakresu 1-1000.
 
 | Parameter | Type | Required/default | Description |
 |---|---|---|---|
 | `include_finished` | `boolean` | `true` |  |
+| `limit` | `integer` | `100` |  |
 | `machine` | `string \| null` | `null` |  |
 | `logical_session_id` | `string \| null` | required | Logical Session dla tego wywołania narzędzia. Podczas pracy nad zadaniem przekazuj session_id zwrócony przez session_manage. Używaj null tylko wtedy, gdy nie ma aktywnej Logical Session. |
 

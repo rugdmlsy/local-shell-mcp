@@ -20,6 +20,16 @@ import {
   type NativePageContext,
 } from "./common"
 
+function remoteDetailRevision(machine: Machine): string {
+  return JSON.stringify([
+    machine.name,
+    machine.status,
+    machine.workdir,
+    machine.capabilities,
+    machine.info,
+  ])
+}
+
 export class RemotesController extends BaseController {
   private machines: Machine[] = []
   private selected = 0
@@ -27,6 +37,7 @@ export class RemotesController extends BaseController {
   private loading = false
   private containerClients: ContainerClientSession[] = []
   private selectedContainerClient = 0
+  private renderedDetailRevision = ""
 
   mount(root: HTMLElement): void {
     this.root = root
@@ -34,7 +45,6 @@ export class RemotesController extends BaseController {
     this.root.querySelector<HTMLElement>(".remotes-page")?.insertAdjacentHTML("beforeend", `<section class="native-panel container-clients-panel"><header><div><h3>Container clients</h3><p>One-time installation and revocable persistent JSON sessions</p></div><div class="toolbar-actions">${button("Install client", "container-invite", { icon: "+", primary: true })}${button("Revoke client", "container-revoke", { danger: true, disabled: true })}</div></header><div data-role="container-client-list"><div class="native-loading">Loading container clients…</div></div></section>`)
     this.listen(root, "click", (event) => this.onClick(event))
     this.listen(root, "keydown", (event) => this.onListKeyDown(event as KeyboardEvent))
-    this.every(() => void this.refresh(), 4_000)
     void this.refresh()
   }
 
@@ -95,7 +105,15 @@ export class RemotesController extends BaseController {
     }
     const current = this.current()
     const detail = this.root.querySelector<HTMLElement>("[data-role=remote-detail]")
-    if (detail) detail.innerHTML = current ? `<div class="remote-title"><span class="status-dot ${current.status === "online" ? "online" : "offline"}"></span><div><h2>${escapeHtml(current.name)}</h2><p>${escapeHtml(current.status)}</p></div></div><dl class="detail-grid"><div><dt>LSM version</dt><dd>${escapeHtml(String(current.info?.version || current.info?.lsm_version || "unknown"))}</dd></div><div><dt>Last seen</dt><dd>${formatAge(current.last_seen, current.last_seen_age_s)}</dd></div><div><dt>Workdir</dt><dd><code>${escapeHtml(current.workdir || "—")}</code></dd></div><div><dt>Capabilities</dt><dd>${(current.capabilities || []).map((item) => `<span class="tag">${escapeHtml(item)}</span>`).join("") || "—"}</dd></div></dl><section class="detail-json"><h4>System information</h4><pre>${highlightedHtml(JSON.stringify(current.info || {}, null, 2), "info.json")}</pre></section>` : '<div class="native-empty">No node selected</div>'
+    if (detail) {
+      const revision = current ? remoteDetailRevision(current) : "empty"
+      if (revision !== this.renderedDetailRevision) {
+        this.renderedDetailRevision = revision
+        detail.innerHTML = current ? `<div class="remote-title"><span class="status-dot ${current.status === "online" ? "online" : "offline"}"></span><div><h2>${escapeHtml(current.name)}</h2><p>${escapeHtml(current.status)}</p></div></div><dl class="detail-grid"><div><dt>LSM version</dt><dd>${escapeHtml(String(current.info?.version || current.info?.lsm_version || "unknown"))}</dd></div><div><dt>Last seen</dt><dd data-role="remote-last-seen"></dd></div><div><dt>Workdir</dt><dd><code>${escapeHtml(current.workdir || "—")}</code></dd></div><div><dt>Capabilities</dt><dd>${(current.capabilities || []).map((item) => `<span class="tag">${escapeHtml(item)}</span>`).join("") || "—"}</dd></div></dl><section class="detail-json"><h4>System information</h4><pre>${highlightedHtml(JSON.stringify(current.info || {}, null, 2), "info.json")}</pre></section>` : '<div class="native-empty">No node selected</div>'
+      }
+      const lastSeen = detail.querySelector<HTMLElement>("[data-role=remote-last-seen]")
+      if (lastSeen && current) lastSeen.textContent = formatAge(current.last_seen, current.last_seen_age_s)
+    }
     const rename = this.root.querySelector<HTMLButtonElement>("[data-action=rename]")
     const revoke = this.root.querySelector<HTMLButtonElement>("[data-action=revoke]")
     const invite = this.root.querySelector<HTMLButtonElement>("[data-action=invite]")

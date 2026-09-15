@@ -1,4 +1,4 @@
-<!-- i18n-source-sha256: 784cf8286b0aba665f54b0b14b7467047ff618447663c4b354d92176796c4001 -->
+<!-- i18n-source-sha256: 63f9fb40c4fd1c085e87c30ed221598cccacef1a6fb4aeb2bb4f1db520590ada -->
 # Справочник tools
 
 Эта страница строится из фактических MCP tool schemas. После изменения public tool surface запустите `python scripts/generate-tools-reference.py`, чтобы обновить English reference.
@@ -277,11 +277,12 @@ OAuth scopes: `shell:read, shell:write, shell:execute, browser:use, file:share, 
 
 ### `job_list`
 
-Перечисляет tracked jobs локально или на remote machine.
+Перечисляет tracked jobs локально или на remote machine. Активные jobs возвращаются первыми; `limit` ограничивается диапазоном 1-1000.
 
 | Parameter | Type | Required/default | Description |
 |---|---|---|---|
 | `include_finished` | `boolean` | `true` |  |
+| `limit` | `integer` | `100` |  |
 | `machine` | `string \| null` | `null` |  |
 | `logical_session_id` | `string \| null` | required | Logical Session для этого вызова инструмента. Во время работы над задачей передавайте session_id, возвращённый session_manage. Используйте null только когда активной Logical Session нет. |
 

@@ -232,7 +232,7 @@ async def test_all_public_tool_wrappers_local_and_remote(tmp_path, monkeypatch):
         "shell_stop": {"session_id": "s"},
         "shell_list": {},
         "job_start": {"command": "true", "purpose": "test"},
-        "job_list": {},
+        "job_list": {"include_finished": False, "limit": 7},
         "job_tail": {"job_id": "j"},
         "job_stop": {"job_id": "j"},
         "job_retry": {"job_id": "j", "purpose": "test"},
@@ -304,7 +304,7 @@ async def test_all_public_tool_wrappers_local_and_remote(tmp_path, monkeypatch):
         "shell_stop": {"session_id": "s"},
         "shell_list": {},
         "job_start": {"command": "true"},
-        "job_list": {},
+        "job_list": {"include_finished": False, "limit": 7},
         "job_tail": {"job_id": "j"},
         "job_stop": {"job_id": "j"},
         "job_retry": {"job_id": "j"},
@@ -331,6 +331,8 @@ async def test_all_public_tool_wrappers_local_and_remote(tmp_path, monkeypatch):
     assert len(fake_remote.calls) == len(remote_cases)
     assert any(tool == "mobile_action" for _, tool, _, _ in fake_remote.calls)
     assert all(tool != "view_image" for _, tool, _, _ in fake_remote.calls)
+    job_list_call = next(call for call in fake_remote.calls if call[1] == "job_list")
+    assert job_list_call[2] == {"include_finished": False, "limit": 7}
 
 
 @pytest.mark.asyncio

@@ -4,6 +4,7 @@ import asyncio
 import base64
 import hashlib
 import io
+import json
 import subprocess
 import tarfile
 from pathlib import Path
@@ -115,6 +116,7 @@ def test_controller_registration_resume_rename_revoke_and_defaults(tmp_path, mon
     )
     assert registration["name"] == "alice@host"
     assert registration["poll_timeout_s"] == 1
+    assert registration["poll_protocol_version"] == remote.REMOTE_WORKER_POLL_PROTOCOL_VERSION
     token = registration["token"]
 
     with pytest.raises(ValueError, match="invalid invite"):
@@ -128,6 +130,7 @@ def test_controller_registration_resume_rename_revoke_and_defaults(tmp_path, mon
     )
     assert resumed["name"] == "alice@host"
     assert resumed["poll_timeout_s"] == 1
+    assert resumed["poll_protocol_version"] == remote.REMOTE_WORKER_POLL_PROTOCOL_VERSION
     assert manager.workers["alice@host"].workdir == "/new"
     with pytest.raises(ValueError, match="belongs"):
         asyncio.run(manager.resume_worker(token, {"name": "other"}))
@@ -282,6 +285,32 @@ def test_worker_event_route_uses_worker_token_behind_oauth(tmp_path, monkeypatch
 
 
 @pytest.mark.asyncio
+async def test_poll_endpoint_returns_retryable_shutdown_response(monkeypatch):
+    class ShuttingDownManager:
+        async def poll(self, token, payload):  # noqa: ANN001
+            assert token == "token"
+            assert payload == {}
+            raise remote.RemoteControllerShuttingDown("controller is shutting down")
+
+    class Request:
+        headers = {"authorization": "Bearer token"}
+
+        async def json(self):
+            return {}
+
+    monkeypatch.setattr(remote, "remote_manager", lambda: ShuttingDownManager())
+
+    response = await remote.poll_endpoint(Request())
+
+    assert response.status_code == 503
+    assert json.loads(response.body) == {
+        "ok": False,
+        "error": "RemoteControllerShuttingDown",
+        "message": "controller is shutting down",
+    }
+
+
+@pytest.mark.asyncio
 async def test_file_worker_write_file_accepts_base64_binary_content(tmp_path, monkeypatch):
     _configure(tmp_path, monkeypatch)
     payload = b"\x00\x01remote\xff"
@@ -337,6 +366,8 @@ async def test_every_worker_tool_dispatch_branch(monkeypatch, tmp_path):
         "grep",
         "playwright_run_script",
         "_apply_patch_text",
+        "transfer_pack_dir_async",
+        "transfer_unpack_archive_async",
     ):
         monkeypatch.setattr(remote, name, async_value)
     for name in (
@@ -354,8 +385,6 @@ async def test_every_worker_tool_dispatch_branch(monkeypatch, tmp_path):
         "transfer_finish_write",
         "transfer_abort_write",
         "transfer_alloc_temp_path",
-        "transfer_pack_dir",
-        "transfer_unpack_archive",
         "_worker_upload_url",
         "_worker_download_url",
     ):
@@ -372,7 +401,7 @@ async def test_every_worker_tool_dispatch_branch(monkeypatch, tmp_path):
         "shell_kill": {"session_id": "s"},
         "shell_list": {},
         "job_start": {"command": "true"},
-        "job_list": {},
+        "job_list": {"include_finished": False, "limit": 7},
         "job_tail": {"job_id": "j"},
         "job_stop": {"job_id": "j"},
         "job_retry": {"job_id": "j"},
@@ -405,6 +434,8 @@ async def test_every_worker_tool_dispatch_branch(monkeypatch, tmp_path):
     for tool, args in cases.items():
         result = await remote.execute_worker_tool(tool, {**args, "_human": True})
         assert result is not None, tool
+        if tool == "job_list":
+            assert result["args"] == [False, 7]
 
     with pytest.raises(ValueError, match="unsupported"):
         await remote.execute_worker_tool("unknown", {})
@@ -631,6 +662,31 @@ async def test_remote_mutation_timeout_and_claimed_cancellation_cleanup(
     assert job_id not in manager.pending
     assert job_id not in manager.pending_machines
     assert job_id not in manager.claimed_jobs
+
+
+@pytest.mark.asyncio
+async def test_claimed_directory_pack_is_cancelled_by_controller(tmp_path, monkeypatch):
+    _configure(tmp_path, monkeypatch)
+    manager = remote.RemoteManager()
+    manager._registry_loaded = True
+    worker = remote.RemoteWorker("node", "token", last_seen=100)
+    manager.workers["node"] = worker
+    manager.tokens["token"] = "node"
+    monkeypatch.setattr(remote, "_utc", lambda: 100.0)
+
+    task = asyncio.create_task(
+        manager.call("node", "transfer_pack_dir", {"path": "large"}, timeout_s=10)
+    )
+    polled = await manager.poll("token")
+    job_id = polled["job"]["id"]
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert job_id not in manager.pending
+    assert job_id in manager.cancelled_jobs
+    heartbeat = await manager.heartbeat("token", {"job_id": job_id})
+    assert heartbeat["cancelled"] is True
 
 
 def test_worker_upload_protocol_and_generated_execution_edges(tmp_path, monkeypatch):

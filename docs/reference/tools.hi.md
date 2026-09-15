@@ -1,4 +1,4 @@
-<!-- i18n-source-sha256: 784cf8286b0aba665f54b0b14b7467047ff618447663c4b354d92176796c4001 -->
+<!-- i18n-source-sha256: 63f9fb40c4fd1c085e87c30ed221598cccacef1a6fb4aeb2bb4f1db520590ada -->
 # Tools reference
 
 यह page वास्तविक MCP tool schemas से बनती है। Public tool surface बदलने के बाद English reference update करने के लिए `python scripts/generate-tools-reference.py` चलाएँ।
@@ -277,11 +277,12 @@ OAuth scopes: `shell:read, shell:write, shell:execute, browser:use, file:share, 
 
 ### `job_list`
 
-Local या remote machine पर tracked jobs सूचीबद्ध करती है।
+Local या remote machine पर tracked jobs सूचीबद्ध करती है। Active jobs पहले लौटाए जाते हैं; `limit` को 1-1000 के बीच सीमित किया जाता है।
 
 | Parameter | Type | Required/default | Description |
 |---|---|---|---|
 | `include_finished` | `boolean` | `true` |  |
+| `limit` | `integer` | `100` |  |
 | `machine` | `string \| null` | `null` |  |
 | `logical_session_id` | `string \| null` | required | इस tool call के लिए Logical Session। task पर काम करते समय session_manage से मिला session_id दें। null केवल तब दें जब कोई Logical Session सक्रिय न हो। |
 

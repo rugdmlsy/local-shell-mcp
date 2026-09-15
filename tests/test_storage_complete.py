@@ -158,6 +158,32 @@ def test_filesystem_mutation_and_temp_cleanup_edges(tmp_path, monkeypatch):
         assert fs.delete_path("link")["deleted"] == "link"
 
 
+def test_temp_pruning_preserves_active_cross_process_lease(tmp_path, monkeypatch):
+    _configure(
+        tmp_path,
+        monkeypatch,
+        LOCAL_SHELL_MCP_MAX_TMP_FILES=1,
+        LOCAL_SHELL_MCP_MAX_TMP_BYTES=1,
+    )
+    temp = fs.temp_dir()
+    active = temp / "active.bin"
+    stale = temp / "stale.bin"
+    active.write_bytes(b"active-data")
+    stale.write_bytes(b"stale-data")
+    fs.refresh_temp_file_lease(active)
+    fs.refresh_temp_file_lease(stale)
+    stale_marker = fs._temp_file_lease_marker(stale)
+    old = time.time() - fs._TEMP_FILE_LEASE_TTL_S - 1
+    os.utime(stale_marker, (old, old))
+
+    fs.prune_temp_dir()
+
+    assert active.exists()
+    assert fs._temp_file_lease_marker(active).exists()
+    assert not stale.exists()
+    assert not stale_marker.exists()
+
+
 def test_download_store_urls_coercion_and_corruption(tmp_path, monkeypatch):
     _configure(tmp_path, monkeypatch)
     assert downloads._snapshot_name("token").endswith(".bin")

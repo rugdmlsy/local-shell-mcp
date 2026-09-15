@@ -1,8 +1,70 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import os
 import sys
+
+# Long-lived MCP connections must not prevent process supervisors from observing exit.
+_GRACEFUL_SHUTDOWN_TIMEOUT_S = 10
+_LOG_LEVEL_ENV = "LOCAL_SHELL_MCP_LOG_LEVEL"
+_DEFAULT_LOG_LEVEL = "WARNING"
+_LOG_LEVELS = {
+    "CRITICAL": logging.CRITICAL,
+    "ERROR": logging.ERROR,
+    "WARNING": logging.WARNING,
+    "INFO": logging.INFO,
+    "DEBUG": logging.DEBUG,
+}
+
+
+def _log_level_name(value: str | None = None) -> str:
+    raw = os.getenv(_LOG_LEVEL_ENV, _DEFAULT_LOG_LEVEL) if value is None else value
+    name = str(raw).strip().upper()
+    if name not in _LOG_LEVELS:
+        choices = ", ".join(_LOG_LEVELS)
+        raise ValueError(f"{_LOG_LEVEL_ENV} must be one of: {choices}")
+    return name
+
+
+def _configure_logging() -> str:
+    name = _log_level_name()
+    level = _LOG_LEVELS[name]
+    logging.basicConfig(level=level)
+    logging.getLogger().setLevel(level)
+    return name
+
+
+def _run_uvicorn(app, settings) -> None:  # noqa: ANN001
+    from contextlib import suppress
+
+    import uvicorn
+    from uvicorn.main import STARTUP_FAILURE
+
+    from .remote import (
+        _interrupt_remote_polls_for_shutdown,
+        _prepare_remote_polls_for_server_start,
+    )
+
+    class ShutdownAwareServer(uvicorn.Server):
+        async def shutdown(self, sockets=None) -> None:  # noqa: ANN001
+            _interrupt_remote_polls_for_shutdown()
+            await super().shutdown(sockets=sockets)
+
+    config = uvicorn.Config(
+        app,
+        host=settings.host,
+        port=settings.port,
+        forwarded_allow_ips=settings.forwarded_allow_ips,
+        timeout_graceful_shutdown=_GRACEFUL_SHUTDOWN_TIMEOUT_S,
+        log_level=_log_level_name().lower(),
+    )
+    server = ShutdownAwareServer(config=config)
+    _prepare_remote_polls_for_server_start()
+    with suppress(KeyboardInterrupt):  # pragma: full coverage
+        server.run()
+    if not server.started:
+        raise SystemExit(STARTUP_FAILURE)
 
 
 def _with_oauth_routes(inner_app, mcp=None):  # noqa: ANN001
@@ -106,8 +168,6 @@ def _build_mcp_http_app(mcp):  # noqa: ANN001
 
 
 def run_mcp() -> None:
-    import uvicorn
-
     from .deprecated_tools import install_deprecated_tool_tombstones
 
     install_deprecated_tool_tombstones()
@@ -124,12 +184,7 @@ def run_mcp() -> None:
         return
 
     if hasattr(mcp, "streamable_http_app"):
-        uvicorn.run(
-            _build_mcp_http_app(mcp),
-            host=settings.host,
-            port=settings.port,
-            forwarded_allow_ips=settings.forwarded_allow_ips,
-        )
+        _run_uvicorn(_build_mcp_http_app(mcp), settings)
         return
     if hasattr(mcp, "sse_app"):
         from .auth import AuthMiddleware, RequestBodyLimitMiddleware
@@ -138,12 +193,7 @@ def run_mcp() -> None:
         if settings.auth_mode != "none":
             app.add_middleware(AuthMiddleware)
         app.add_middleware(RequestBodyLimitMiddleware)
-        uvicorn.run(
-            app,
-            host=settings.host,
-            port=settings.port,
-            forwarded_allow_ips=settings.forwarded_allow_ips,
-        )
+        _run_uvicorn(app, settings)
         return
 
     try:
@@ -153,23 +203,17 @@ def run_mcp() -> None:
 
 
 def run_http() -> None:
-    import uvicorn
-
     from .http_app import build_http_app
     from .settings import get_settings, validate_public_oauth_configuration
 
     settings = get_settings()
     validate_public_oauth_configuration(settings)
     app = build_http_app()
-    uvicorn.run(
-        app,
-        host=settings.host,
-        port=settings.port,
-        forwarded_allow_ips=settings.forwarded_allow_ips,
-    )
+    _run_uvicorn(app, settings)
 
 
 def main(argv: list[str] | None = None) -> None:
+    _configure_logging()
     argv = sys.argv[1:] if argv is None else list(argv)
     if argv and argv[0] == "restart-supervisor":
         from .restart_ops import run_restart_supervisor_cli

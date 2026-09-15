@@ -1,4 +1,4 @@
-<!-- i18n-source-sha256: 784cf8286b0aba665f54b0b14b7467047ff618447663c4b354d92176796c4001 -->
+<!-- i18n-source-sha256: 63f9fb40c4fd1c085e87c30ed221598cccacef1a6fb4aeb2bb4f1db520590ada -->
 # Tools referansı
 
 Bu page gerçek MCP tool schemas üzerinden oluşturulur. Public tool surface değiştiğinde English reference güncellemek için `python scripts/generate-tools-reference.py` çalıştırın.
@@ -277,11 +277,12 @@ OAuth scopes: `shell:read, shell:write, shell:execute, browser:use, file:share, 
 
 ### `job_list`
 
-Local veya remote machine üzerinde tracked jobs listeler.
+Local veya remote machine üzerinde tracked jobs listeler. Active joblar önce döndürülür; `limit` 1-1000 aralığıyla sınırlandırılır.
 
 | Parameter | Type | Required/default | Description |
 |---|---|---|---|
 | `include_finished` | `boolean` | `true` |  |
+| `limit` | `integer` | `100` |  |
 | `machine` | `string \| null` | `null` |  |
 | `logical_session_id` | `string \| null` | required | Bu tool çağrısının Logical Sessionı. Görev üzerinde çalışırken session_manage tarafından döndürülen session_id değerini iletin. null yalnızca etkin Logical Session yokken kullanılmalıdır. |
 

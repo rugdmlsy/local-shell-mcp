@@ -128,6 +128,39 @@ def api_request(
     return payload.get("data") or {}
 
 
+TERMINAL_QUERY_RESPONSES = (
+    (b"\x1b[c", b"\x1b[?1;2c"),
+    (b"\x1b[>c", b"\x1b[>0;10;1c"),
+    (b"\x1b[5n", b"\x1b[0n"),
+    (b"\x1b[6n", b"\x1b[1;1R"),
+    (b"\x1b[?6n", b"\x1b[?1;1R"),
+)
+
+
+def scan_terminal_queries(chunk: bytes) -> tuple[tuple[bytes, ...], bytes]:
+    responses: list[bytes] = []
+    offset = 0
+    while offset < len(chunk):
+        matched = False
+        for query, response in TERMINAL_QUERY_RESPONSES:
+            if chunk.startswith(query, offset):
+                responses.append(response)
+                offset += len(query)
+                matched = True
+                break
+        if not matched:
+            offset += 1
+
+    max_prefix = max(len(query) for query, _response in TERMINAL_QUERY_RESPONSES) - 1
+    tail = b""
+    for length in range(min(len(chunk), max_prefix), 0, -1):
+        suffix = chunk[-length:]
+        if any(len(suffix) < len(query) and query.startswith(suffix) for query, _response in TERMINAL_QUERY_RESPONSES):
+            tail = suffix
+            break
+    return tuple(responses), tail
+
+
 async def exercise_native_terminal(port: int) -> None:
     started = api_request(
         port,
@@ -144,6 +177,7 @@ async def exercise_native_terminal(port: int) -> None:
     )
     marker = b"native-terminal-smoke-ok"
     output = bytearray()
+    query_tail = b""
     try:
         async with websockets.connect(
             uri,
@@ -161,11 +195,16 @@ async def exercise_native_terminal(port: int) -> None:
                         message = await asyncio.wait_for(websocket.recv(), timeout=remaining)
                     except TimeoutError:
                         break
-                    output.extend(
+                    chunk = (
                         message.encode("utf-8", errors="replace")
                         if isinstance(message, str)
                         else message
                     )
+                    output.extend(chunk)
+                    query_chunk = query_tail + chunk
+                    responses, query_tail = scan_terminal_queries(query_chunk)
+                    for response in responses:
+                        await websocket.send(response)
                 if marker in output:
                     break
     finally:

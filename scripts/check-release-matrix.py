@@ -44,6 +44,14 @@ def main() -> int:
         return 1
 
     validate_job = jobs.get("validate-release", {})
+    release_source_script = step_script(validate_job, "Validate release source")
+    if "refs/heads/${DEFAULT_BRANCH}" not in release_source_script:
+        print("Release workflow must reject dispatches outside the default branch.")
+        return 1
+    if "git ls-remote --exit-code origin" not in release_source_script or "GITHUB_SHA" not in release_source_script:
+        print("Release workflow must verify the dispatched SHA is the current default-branch commit.")
+        return 1
+
     docker_tag_script = step_script(validate_job, "Prepare Docker release tags")
     if 'PRERELEASE' not in docker_tag_script or "if not prerelease:" not in docker_tag_script:
         print("Docker latest tags must be emitted only for stable releases.")

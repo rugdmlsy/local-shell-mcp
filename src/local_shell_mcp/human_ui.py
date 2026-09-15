@@ -37,7 +37,7 @@ from .fs_ops import (
     perform_file_action,
     read_text,
     resolve_path,
-    write_text,
+    write_content,
 )
 from .image_ops import ImageFile, assert_view_image_size, detect_image_type, make_image_preview
 from .jobs import list_jobs
@@ -1067,13 +1067,15 @@ async def api_file_action(request: Request) -> Response:
             return _json_ok(result)
         if action == "write":
             expected_sha256 = str(body.get("expected_sha256") or "") or None
+            encoding = str(body.get("encoding") or "utf-8")
             result = await _machine_dispatch(
                 machine,
-                lambda: write_text(
+                lambda: write_content(
                     path,
                     str(body.get("content") or ""),
                     bool(body.get("overwrite", True)),
                     expected_sha256,
+                    encoding,
                 ),
                 "write_file",
                 {
@@ -1081,6 +1083,7 @@ async def api_file_action(request: Request) -> Response:
                     "content": str(body.get("content") or ""),
                     "overwrite": bool(body.get("overwrite", True)),
                     "expected_sha256": expected_sha256,
+                    "encoding": encoding,
                 },
             )
             _record_live_human_action(live_id, "file.write", machine=machine, path=path)
@@ -1341,6 +1344,7 @@ async def api_audit(request: Request) -> Response:
             start_ts=float(params["start_ts"]) if "start_ts" in params else None,
             end_ts=float(params["end_ts"]) if "end_ts" in params else None,
             sort=params.get("sort", "desc"),
+            summary_only=True,
         )
         return _json_ok(result)
     except Exception as exc:

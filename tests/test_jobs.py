@@ -862,6 +862,90 @@ def test_concurrent_job_starts_preserve_every_record(tmp_path, monkeypatch):
     assert listed["counts"] == {"running": 8}
 
 
+def test_job_list_limit_prioritizes_active_jobs_and_reports_truncation(tmp_path, monkeypatch):
+    state_dir = tmp_path / ".state"
+    state_dir.mkdir()
+    monkeypatch.setenv("LOCAL_SHELL_MCP_WORKSPACE_ROOT", str(tmp_path))
+    monkeypatch.setenv("LOCAL_SHELL_MCP_STATE_DIR", str(state_dir))
+    get_settings.cache_clear()
+
+    rows = [
+        {
+            "job_id": "finished-newest",
+            "status": "succeeded",
+            "command": "true",
+            "cwd": ".",
+            "created_at": 40.0,
+            "updated_at": 40.0,
+            "attempts": 1,
+        },
+        {
+            "job_id": "active-newer",
+            "status": "running",
+            "command": "sleep 10",
+            "cwd": ".",
+            "session_id": "session-newer",
+            "created_at": 30.0,
+            "updated_at": 30.0,
+            "attempts": 1,
+        },
+        {
+            "job_id": "finished-older",
+            "status": "failed",
+            "command": "false",
+            "cwd": ".",
+            "created_at": 20.0,
+            "updated_at": 20.0,
+            "attempts": 1,
+        },
+        {
+            "job_id": "active-older",
+            "status": "running",
+            "command": "sleep 10",
+            "cwd": ".",
+            "session_id": "session-older",
+            "created_at": 10.0,
+            "updated_at": 10.0,
+            "attempts": 1,
+        },
+    ]
+    (state_dir / jobs_module.JOB_STORE_FILE_NAME).write_text(
+        json.dumps({"version": jobs_module.JOB_STORE_VERSION, "jobs": rows}),
+        encoding="utf-8",
+    )
+
+    async def active_shells():
+        return {
+            "sessions": [
+                {"session_id": "session-newer"},
+                {"session_id": "session-older"},
+            ]
+        }
+
+    monkeypatch.setattr(jobs_module, "list_shells", active_shells)
+
+    listed = asyncio.run(list_jobs(limit=2))
+    assert [job["job_id"] for job in listed["jobs"]] == [
+        "active-newer",
+        "active-older",
+    ]
+    assert listed["total"] == 4
+    assert listed["returned"] == 2
+    assert listed["truncated"] is True
+    assert listed["counts"] == {"succeeded": 1, "running": 2, "failed": 1}
+
+    monkeypatch.setattr(jobs_module, "JOB_LIST_MAX_LIMIT", 1)
+    capped = asyncio.run(list_jobs(limit=999))
+    assert capped["returned"] == 1
+    assert capped["truncated"] is True
+
+    active_only = asyncio.run(list_jobs(include_finished=False, limit=1))
+    assert [job["job_id"] for job in active_only["jobs"]] == ["active-newer"]
+    assert active_only["total"] == 2
+    assert active_only["returned"] == 1
+    assert active_only["truncated"] is True
+
+
 def test_finished_job_history_and_attempt_files_are_bounded(tmp_path, monkeypatch):
     state_dir = tmp_path / ".local-shell-mcp"
     runtime_dir = state_dir / "jobs"

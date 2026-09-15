@@ -26,10 +26,14 @@ describe("Native WebUI actions", () => {
 
     for (const source of [files, sessions, remotes]) {
       expect(source).toContain('this.listen(root, "keydown"')
-      expect(source).toContain('tabindex="${selected ? "0" : "-1"}"')
       expect(source).toContain('event.key === "ArrowDown"')
       expect(source).toContain('event.key === "Enter"')
     }
+    for (const source of [files, sessions]) {
+      expect(source).toContain("tabIndex = -1")
+      expect(source).toContain("tabIndex = 0")
+    }
+    expect(remotes).toContain('tabindex="${selected ? "0" : "-1"}"')
     expect(sessions).toContain("data-session-id")
     expect(remotes).toContain("data-remote-name")
     expect(remotes).toContain("focusedName")
@@ -63,6 +67,17 @@ describe("Native WebUI actions", () => {
     }
   })
 
+  test("uses one visibility-aware scheduler for native WebUI refreshes", async () => {
+    const nativeSources = await Promise.all(
+      nativePages.map((page) => Bun.file(new URL(`./web-native/${page}.ts`, import.meta.url)).text()),
+    )
+    const web = await Bun.file(new URL("./web.ts", import.meta.url)).text()
+
+    for (const source of nativeSources) expect(source).not.toContain("this.every(")
+    expect(web).toContain('document.visibilityState !== "hidden"')
+    expect(web).toContain('document.addEventListener("visibilitychange"')
+  })
+
   test("uses the shared WebUI refresh control instead of duplicating it inside native pages", async () => {
     const sources = await Promise.all(
       nativePages.map((page) => Bun.file(new URL(`./web-native/${page}.ts`, import.meta.url)).text()),
@@ -77,5 +92,26 @@ describe("Native WebUI actions", () => {
 
     expect(styles).toContain("body.native-view-active .main-content { padding: 16px 14px 84px; }")
     expect(styles).toContain("body.native-view-active #refresh-button { display: inline-flex; }")
+  })
+
+  test("uses two visible file panes after the machine rail is hidden", async () => {
+    const styles = await Bun.file(new URL("./web-native.css", import.meta.url)).text()
+    const compactRule = styles.lastIndexOf("@media (max-width: 1100px)")
+    const narrowRule = styles.lastIndexOf("@media (max-width: 850px)")
+    const compactStyles = styles.slice(compactRule, narrowRule)
+
+    expect(compactRule).toBeGreaterThan(styles.lastIndexOf("@media (max-width: 1200px)"))
+    expect(compactStyles).toContain(".files-layout, .files-layout.no-parent { grid-template-columns: minmax(0,1fr); }")
+    expect(compactStyles).toContain(".files-layout.preview-open, .files-layout.no-parent.preview-open { grid-template-columns: minmax(360px,1fr) minmax(280px,.65fr); }")
+  })
+
+  test("keeps the mobile terminal height override after desktop refinements", async () => {
+    const styles = await Bun.file(new URL("./web-native.css", import.meta.url)).text()
+    const desktopRule = styles.lastIndexOf(".terminal-layout { grid-template-columns: 240px minmax(0,1fr)")
+    const mobileRule = styles.lastIndexOf("@media (max-width: 720px)")
+    const mobileStyles = styles.slice(mobileRule)
+
+    expect(mobileRule).toBeGreaterThan(desktopRule)
+    expect(mobileStyles).toContain(".terminal-layout { height: calc(100dvh - 319px); min-height: 420px; }")
   })
 })

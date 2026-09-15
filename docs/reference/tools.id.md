@@ -1,4 +1,4 @@
-<!-- i18n-source-sha256: 784cf8286b0aba665f54b0b14b7467047ff618447663c4b354d92176796c4001 -->
+<!-- i18n-source-sha256: 63f9fb40c4fd1c085e87c30ed221598cccacef1a6fb4aeb2bb4f1db520590ada -->
 # Referensi tools
 
 Page ini dibangun dari MCP tool schemas yang sebenarnya. Jalankan `python scripts/generate-tools-reference.py` setelah mengubah public tool surface untuk memperbarui English reference.
@@ -277,11 +277,12 @@ Saat `machine` diberikan, call juga memerlukan `remote:use` dan dijalankan melal
 
 ### `job_list`
 
-Mencantumkan tracked jobs secara lokal atau pada remote machine.
+Mencantumkan tracked jobs secara lokal atau pada remote machine. Job aktif dikembalikan lebih dulu; `limit` dibatasi ke rentang 1-1000.
 
 | Parameter | Type | Required/default | Description |
 |---|---|---|---|
 | `include_finished` | `boolean` | `true` |  |
+| `limit` | `integer` | `100` |  |
 | `machine` | `string \| null` | `null` |  |
 | `logical_session_id` | `string \| null` | required | Logical Session untuk pemanggilan tool ini. Saat mengerjakan task, berikan session_id yang dikembalikan session_manage. Gunakan null hanya ketika tidak ada Logical Session aktif. |
 

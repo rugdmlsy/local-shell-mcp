@@ -1,5 +1,10 @@
 from local_shell_mcp import __version__
-from local_shell_mcp.remote import RemoteManager, RemoteWorker, worker_info
+from local_shell_mcp.remote import (
+    REMOTE_WORKER_POLL_PROTOCOL_VERSION,
+    RemoteManager,
+    RemoteWorker,
+    worker_info,
+)
 from local_shell_mcp.settings import get_settings
 
 
@@ -35,6 +40,7 @@ def test_worker_info_reports_runtime_version(tmp_path, monkeypatch):
     info = worker_info(str(tmp_path))
 
     assert info["lsm_version"] == __version__
+    assert info["poll_protocol_version"] == REMOTE_WORKER_POLL_PROTOCOL_VERSION
 
 
 def test_list_machines_serializes_concurrent_registry_mutations(tmp_path, monkeypatch):

@@ -18,15 +18,15 @@ state and launcher remain untouched for the rollback drill.
 
 ## One-command deployment from the Mac
 
-For routine releases, commit and push a clean `morrow/v4.2` checkout, increment
-the `4.2.0+morrow.N` version, then run:
+For routine releases, commit and push a clean `morrow/v4.3` checkout, increment
+the `4.3.2+morrow.N` version, then run:
 
 ```bash
 ./deploy/morrow/deploy-vps.sh --dry-run
 ./deploy/morrow/deploy-vps.sh
 ```
 
-The command derives `morrow-v4.2.0-N` from `pyproject.toml`, creates and pushes
+The command derives `morrow-v4.3.2-N` from `pyproject.toml`, creates and pushes
 that tag when needed, builds the immutable VPS release, verifies its manifest
 and icon, switches `current`, and performs local plus public health checks. Its
 localhost MCP probe performs a real `environment_get` call, proving that local
@@ -57,7 +57,7 @@ wall-clock deadline defaults to 45 seconds per attempt and can be adjusted with
 
 ## Build a pinned release
 
-Run `build-release.sh morrow-v4.2.0-4 <full-commit-sha>` as `morrow` on the VPS.
+Run `build-release.sh morrow-v4.3.2-1 <full-commit-sha>` as `morrow` on the VPS.
 The script fetches that exact public tag, verifies the commit, runs
 `uv lock --check` and `uv sync --frozen`, writes `release-manifest.json`, and
 only then updates `candidate`. It does not touch `current` or restart production.
@@ -83,7 +83,7 @@ Session/Plan or Dynamic MCP state.
 
 Copy `host.yaml.example` to the private `host-v4.2.yaml`, retaining the values
 shown for local execution, remotes, Session/Plan, file state, and the official
-v4.2 Live Workspace. Live Workspace owns the upstream Goal/Plan continuation
+v4.3 Live Workspace. Live Workspace owns the upstream Goal/Plan continuation
 path again; do not delegate continuation to Morrow Chat. Secrets stay in the
 existing mode-0600 `service.env`.
 

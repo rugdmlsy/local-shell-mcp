@@ -51,6 +51,7 @@ from .fs_ops import (
     write_text,
 )
 from .jobs import (
+    JOB_LIST_DEFAULT_LIMIT,
     collect_pending_job_notifications,
     list_jobs,
     mark_job_notification_sent,
@@ -92,10 +93,10 @@ from .transfer_ops import (
     transfer_begin_write,
     transfer_finish_write,
     transfer_mark_complete_write,
-    transfer_pack_dir,
+    transfer_pack_dir_async,
     transfer_read_chunk,
     transfer_stat,
-    transfer_unpack_archive,
+    transfer_unpack_archive_async,
     transfer_write_chunk,
 )
 from .version import version_info as get_version_info
@@ -104,7 +105,8 @@ REMOTE_JOIN_PATH = "/join"
 REMOTE_POWERSHELL_JOIN_PATH = REMOTE_JOIN_PATH + ".ps1"
 REMOTE_API_PREFIX = "/remote"
 REMOTE_WORKER_BUNDLE_PATH = "/remote/worker-bundle.tgz"
-REMOTE_WORKER_POLL_PROTOCOL_VERSION = 2
+REMOTE_WORKER_LANE_PROTOCOL_VERSION = 2
+REMOTE_WORKER_POLL_PROTOCOL_VERSION = REMOTE_WORKER_LANE_PROTOCOL_VERSION
 _WORKER_CONNECT_TIMEOUT_S = 10.0
 _WORKER_POLL_TIMEOUT_GRACE_S = 10.0
 # The remote worker is designed to start on machines that only have Python, curl,
@@ -122,6 +124,8 @@ MAX_REMOTE_MACHINE_NAME_LENGTH = 128
 MAX_REMOTE_MOBILE_EVENTS = 100
 MAX_REMOTE_MOBILE_RECENT_EVENT_IDS = 500
 REMOTE_MOBILE_EVENT_DEFAULT_TTL_S = 7 * 24 * 60 * 60
+REMOTE_WORKER_INTERACTIVE_LANE = "interactive"
+REMOTE_WORKER_TRANSFER_LANE = "transfer"
 REMOTE_NON_CANCELLABLE_WORKER_TOOLS = frozenset(
     {
         "write_file",
@@ -132,8 +136,6 @@ REMOTE_NON_CANCELLABLE_WORKER_TOOLS = frozenset(
         "transfer_write_chunk",
         "transfer_finish_write",
         "transfer_abort_write",
-        "transfer_pack_dir",
-        "transfer_unpack_archive",
         "transfer_upload_url",
         "transfer_download_url",
         "transfer_open_receiver",
@@ -145,7 +147,45 @@ REMOTE_NON_CANCELLABLE_WORKER_TOOLS = frozenset(
 )
 
 
+def _worker_job_lane(tool: str, lane: str | None = None) -> str:
+    if lane is not None:
+        if lane not in {REMOTE_WORKER_INTERACTIVE_LANE, REMOTE_WORKER_TRANSFER_LANE}:
+            raise ValueError(f"unsupported remote worker lane: {lane}")
+        return lane
+    if tool.startswith("transfer_"):
+        return REMOTE_WORKER_TRANSFER_LANE
+    return REMOTE_WORKER_INTERACTIVE_LANE
+
+
+def _worker_poll_protocol_version(info: dict[str, Any]) -> int:
+    try:
+        return int(info.get("poll_protocol_version") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _migrate_worker_lane_queues(worker: RemoteWorker) -> None:
+    interactive_jobs: list[dict[str, Any]] = []
+    while True:
+        try:
+            job = worker.queue.get_nowait()
+        except asyncio.QueueEmpty:
+            break
+        worker.queue.task_done()
+        lane = _worker_job_lane(str(job.get("tool") or ""), job.get("lane"))
+        if lane == REMOTE_WORKER_TRANSFER_LANE:
+            worker.transfer_queue.put_nowait(job)
+        else:
+            interactive_jobs.append(job)
+    for job in interactive_jobs:
+        worker.queue.put_nowait(job)
+
+
 class RemoteJobCancelled(RuntimeError):
+    pass
+
+
+class RemoteControllerShuttingDown(RuntimeError):
     pass
 
 
@@ -226,6 +266,55 @@ def _error(message: str, error: str = "remote_error", status_code: int = 400):  
     return JSONResponse({"ok": False, "error": error, "message": message}, status_code=status_code)
 
 
+_REMOTE_POLL_SHUTDOWN_WAITERS: set[asyncio.Future[None]] = set()
+_REMOTE_POLL_SHUTTING_DOWN = False
+
+
+def _prepare_remote_polls_for_server_start() -> None:
+    global _REMOTE_POLL_SHUTTING_DOWN
+    _REMOTE_POLL_SHUTTING_DOWN = False
+
+
+def _interrupt_remote_polls_for_shutdown() -> int:
+    global _REMOTE_POLL_SHUTTING_DOWN
+    _REMOTE_POLL_SHUTTING_DOWN = True
+    waiters = tuple(_REMOTE_POLL_SHUTDOWN_WAITERS)
+    for waiter in waiters:
+        if not waiter.done():
+            waiter.set_result(None)
+    return len(waiters)
+
+
+async def _wait_for_remote_poll_item(
+    queue: asyncio.Queue[dict[str, Any]], timeout_s: float
+) -> dict[str, Any]:
+    if _REMOTE_POLL_SHUTTING_DOWN:
+        raise RemoteControllerShuttingDown("controller is shutting down")
+    loop = asyncio.get_running_loop()
+    shutdown_waiter: asyncio.Future[None] = loop.create_future()
+    queue_get = asyncio.create_task(queue.get())
+    _REMOTE_POLL_SHUTDOWN_WAITERS.add(shutdown_waiter)
+    try:
+        done, _ = await asyncio.wait(
+            {queue_get, shutdown_waiter},
+            timeout=timeout_s,
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if shutdown_waiter in done:
+            raise RemoteControllerShuttingDown("controller is shutting down")
+        if queue_get in done:
+            return queue_get.result()
+        raise TimeoutError
+    finally:
+        _REMOTE_POLL_SHUTDOWN_WAITERS.discard(shutdown_waiter)
+        if not shutdown_waiter.done():
+            shutdown_waiter.cancel()
+        if not queue_get.done():
+            queue_get.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await queue_get
+
+
 @dataclass
 class RemoteInvite:
     code: str
@@ -251,6 +340,7 @@ class RemoteWorker:
     pending_events: list[dict[str, Any]] = field(default_factory=list)
     recent_event_ids: list[str] = field(default_factory=list)
     queue: asyncio.Queue[dict[str, Any]] = field(default_factory=asyncio.Queue)
+    transfer_queue: asyncio.Queue[dict[str, Any]] = field(default_factory=asyncio.Queue)
 
 
 class RemoteManager:
@@ -570,7 +660,7 @@ class RemoteManager:
             "ttl_s": ttl,
             "join_url": join_url,
             "command": command,
-            "persistent_command": command + " --persist",
+            "persistent_command": command + ' --persist && export PATH="${LOCAL_SHELL_MCP_WORKER_BIN_DIR:-$HOME/.local/bin}:$PATH"',
             "powershell_join_url": powershell_join_url,
             "powershell_command": powershell_command,
             "powershell_persistent_command": powershell_command + " -Persist",
@@ -623,6 +713,7 @@ class RemoteManager:
             "poll_interval_s": 0,
             "poll_timeout_s": get_settings().remote_poll_timeout_s,
             "heartbeat_interval_s": _remote_heartbeat_interval_s(),
+            "poll_protocol_version": REMOTE_WORKER_POLL_PROTOCOL_VERSION,
         }
 
     async def resume_worker(self, access: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -651,6 +742,7 @@ class RemoteManager:
             "poll_interval_s": 0,
             "poll_timeout_s": get_settings().remote_poll_timeout_s,
             "heartbeat_interval_s": _remote_heartbeat_interval_s(),
+            "poll_protocol_version": REMOTE_WORKER_POLL_PROTOCOL_VERSION,
         }
 
     async def register_push_token(self, access: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -967,6 +1059,9 @@ class RemoteManager:
         worker_version = str(payload.get("worker_version") or "")
         protocol_version = int(payload.get("protocol_version") or 0)
         supports_self_update = bool(payload.get("supports_self_update", True))
+        lane = str(payload.get("lane") or REMOTE_WORKER_INTERACTIVE_LANE)
+        if lane not in {REMOTE_WORKER_INTERACTIVE_LANE, REMOTE_WORKER_TRANSFER_LANE}:
+            raise ValueError(f"unsupported remote worker lane: {lane}")
         configured_poll_timeout_s = float(get_settings().remote_poll_timeout_s)
         effective_poll_timeout_s = configured_poll_timeout_s
         try:
@@ -976,13 +1071,11 @@ class RemoteManager:
         if math.isfinite(worker_poll_timeout_s) and worker_poll_timeout_s > 0:
             effective_poll_timeout_s = min(configured_poll_timeout_s, worker_poll_timeout_s)
         upgrade = None
-        if protocol_version >= REMOTE_WORKER_POLL_PROTOCOL_VERSION:
+        if protocol_version > 0:
             upgrade = {
                 "required": supports_self_update and worker_version != __version__,
                 "version": __version__,
             }
-        elif protocol_version > 0:
-            upgrade = {"required": supports_self_update, "version": __version__}
         with self._state_lock:
             worker.status = "online"
             worker.last_seen = _utc()
@@ -998,6 +1091,8 @@ class RemoteManager:
             mobile_events = (
                 self._mobile_events_snapshot_locked(worker) if supports_mobile_events else []
             )
+            if protocol_version >= REMOTE_WORKER_LANE_PROTOCOL_VERSION:
+                _migrate_worker_lane_queues(worker)
         if upgrade and upgrade["required"]:
             response = {
                 "job": None,
@@ -1014,6 +1109,12 @@ class RemoteManager:
                 "upgrade": upgrade,
                 "poll_timeout_s": configured_poll_timeout_s,
             }
+        queue = (
+            worker.transfer_queue
+            if protocol_version >= REMOTE_WORKER_LANE_PROTOCOL_VERSION
+            and lane == REMOTE_WORKER_TRANSFER_LANE
+            else worker.queue
+        )
         loop = asyncio.get_running_loop()
         deadline = loop.time() + effective_poll_timeout_s
         while True:
@@ -1033,7 +1134,7 @@ class RemoteManager:
                     response["events"] = mobile_events
                 return response
             try:
-                job = await asyncio.wait_for(worker.queue.get(), timeout=remaining)
+                job = await _wait_for_remote_poll_item(queue, remaining)
             except TimeoutError:
                 with self._state_lock:
                     mobile_events = (
@@ -1122,6 +1223,8 @@ class RemoteManager:
         tool: str,
         args: dict[str, Any],
         timeout_s: int | None = None,
+        *,
+        lane: str | None = None,
     ) -> dict[str, Any]:
         settings = get_settings()
         effective_timeout = timeout_s or settings.remote_job_timeout_s
@@ -1145,15 +1248,25 @@ class RemoteManager:
                 should_wake = True
             max_pending = max(1, settings.remote_max_pending_jobs)
             machine_pending = sum(1 for value in self.pending_machines.values() if value == machine)
-            if worker.queue.qsize() >= max_pending or machine_pending >= max_pending:
+            queued = worker.queue.qsize() + worker.transfer_queue.qsize()
+            if queued >= max_pending or machine_pending >= max_pending:
                 raise RuntimeError(f"remote machine queue is full: {machine}")
             self.pending[job_id] = future
             self.pending_machines[job_id] = machine
-            worker.queue.put_nowait(
+            protocol_version = _worker_poll_protocol_version(worker.info)
+            job_lane = _worker_job_lane(tool, lane)
+            queue = (
+                worker.transfer_queue
+                if protocol_version >= REMOTE_WORKER_LANE_PROTOCOL_VERSION
+                and job_lane == REMOTE_WORKER_TRANSFER_LANE
+                else worker.queue
+            )
+            queue.put_nowait(
                 {
                     "id": job_id,
                     "tool": tool,
                     "args": args,
+                    "lane": job_lane,
                     "expires_at": _utc() + effective_timeout,
                 }
             )
@@ -1238,7 +1351,9 @@ class RemoteManager:
                         "last_seen": worker.last_seen,
                         "last_seen_age_s": last_seen_age_s,
                         "offline_after_s": offline_after_s,
-                        "queue_depth": worker.queue.qsize(),
+                        "queue_depth": worker.queue.qsize() + worker.transfer_queue.qsize(),
+                        "interactive_queue_depth": worker.queue.qsize(),
+                        "transfer_queue_depth": worker.transfer_queue.qsize(),
                         "capabilities": list(worker.capabilities),
                         "info": dict(worker.info),
                         "wake": {
@@ -1264,10 +1379,11 @@ class RemoteManager:
             for job_id, pending_machine in list(self.pending_machines.items()):
                 if pending_machine == machine:
                     self._cancel_job(job_id)
-            while not worker.queue.empty():
-                with contextlib.suppress(asyncio.QueueEmpty):
-                    queued = worker.queue.get_nowait()
-                    self.cancelled_jobs.pop(str(queued.get("id") or ""), None)
+            for queue in (worker.queue, worker.transfer_queue):
+                while not queue.empty():
+                    with contextlib.suppress(asyncio.QueueEmpty):
+                        queued = queue.get_nowait()
+                        self.cancelled_jobs.pop(str(queued.get("id") or ""), None)
             self._save_registry_unlocked()
         return {"machine": machine, "revoked": True}
 
@@ -1479,6 +1595,8 @@ async def poll_endpoint(request: Any):  # noqa: ANN201
         return JSONResponse(
             _ok(await remote_manager().poll(_bearer_token(request), await request.json()))
         )
+    except RemoteControllerShuttingDown as exc:
+        return _error(str(exc), type(exc).__name__, 503)
     except Exception as exc:
         return _error(str(exc), type(exc).__name__, 401)
 
@@ -2064,7 +2182,10 @@ async def _execute_job_worker_tool(tool: str, args: dict[str, Any]) -> Any:
         )
 
     if tool == "job_list":
-        return await list_jobs(args.get("include_finished", True))
+        return await list_jobs(
+            args.get("include_finished", True),
+            args.get("limit", JOB_LIST_DEFAULT_LIMIT),
+        )
 
     if tool == "job_tail":
         return await tail_job(args["job_id"], args.get("lines", 200))
@@ -2200,13 +2321,10 @@ async def _execute_transfer_worker_tool(tool: str, args: dict[str, Any]) -> Any:
         return await asyncio.to_thread(transfer_alloc_temp_path, args.get("suffix", ".bin"))
 
     if tool == "transfer_pack_dir":
-        return await asyncio.to_thread(
-            transfer_pack_dir, args["path"], args.get("compression", "gz")
-        )
+        return await transfer_pack_dir_async(args["path"], args.get("compression", "gz"))
 
     if tool == "transfer_unpack_archive":
-        return await asyncio.to_thread(
-            transfer_unpack_archive,
+        return await transfer_unpack_archive_async(
             args["archive_path"],
             args["dst_path"],
             args.get("overwrite", True),
@@ -2359,6 +2477,7 @@ def worker_info(workdir: str) -> dict[str, Any]:
         "cwd": os.getcwd(),
         "workdir": workdir,
         "lsm_version": __version__,
+        "poll_protocol_version": REMOTE_WORKER_POLL_PROTOCOL_VERSION,
         "python": sys.version.split()[0],
         "platform": sys.platform,
         "persistent_shell": persistent_shell_backend_info(),
@@ -2373,12 +2492,17 @@ def _worker_resource_snapshot() -> dict[str, Any]:
     return machine_resource_snapshot(workdir)
 
 
-def _worker_poll_payload(poll_request_timeout_s: float | None = None) -> dict[str, Any]:
+def _worker_poll_payload(
+    poll_request_timeout_s: float | None = None,
+    lane: str | None = None,
+) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "protocol_version": REMOTE_WORKER_POLL_PROTOCOL_VERSION,
         "worker_version": __version__,
         "info": _worker_resource_snapshot(),
     }
+    if lane is not None:
+        payload["lane"] = lane
     if poll_request_timeout_s is not None:
         payload["poll_timeout_s"] = max(
             0.001, poll_request_timeout_s - _WORKER_POLL_TIMEOUT_GRACE_S
@@ -2452,6 +2576,37 @@ def _parse_worker_http_json(url: str, status_code: int, response_body: str) -> d
     return parsed
 
 
+class _WorkerRequestCancellation:
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._cancelled = False
+        self._process: subprocess.Popen[bytes] | None = None
+
+    def attach(self, process: subprocess.Popen[bytes]) -> None:
+        with self._lock:
+            self._process = process
+            cancelled = self._cancelled
+        if cancelled:
+            with contextlib.suppress(OSError):
+                process.kill()
+
+    def detach(self, process: subprocess.Popen[bytes]) -> None:
+        with self._lock:
+            if self._process is process:
+                self._process = None
+
+    def cancel(self) -> None:
+        with self._lock:
+            self._cancelled = True
+            process = self._process
+        if process is not None:
+            with contextlib.suppress(OSError):
+                process.kill()
+
+
+_worker_request_context = threading.local()
+
+
 def _worker_post_json_with_curl(
     url: str,
     body: bytes,
@@ -2486,13 +2641,29 @@ def _worker_post_json_with_curl(
         command.extend(["-H", f"{name}: {value}"])
     command.append(url)
 
-    completed = subprocess.run(  # noqa: S603
-        command,
-        input=body,
-        capture_output=True,
-        check=False,
-        creationflags=_worker_subprocess_creationflags(),
-    )
+    cancellation = getattr(_worker_request_context, "cancellation", None)
+    if cancellation is None:
+        completed = subprocess.run(  # noqa: S603
+            command,
+            input=body,
+            capture_output=True,
+            check=False,
+            creationflags=_worker_subprocess_creationflags(),
+        )
+    else:
+        process = subprocess.Popen(  # noqa: S603
+            command,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            creationflags=_worker_subprocess_creationflags(),
+        )
+        cancellation.attach(process)
+        try:
+            stdout, stderr = process.communicate(input=body)
+        finally:
+            cancellation.detach(process)
+        completed = subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
     stdout = completed.stdout.decode("utf-8", errors="replace")
     stderr = completed.stderr.decode("utf-8", errors="replace").strip()
     response_body, marker, status_text = stdout.rpartition(status_marker)
@@ -2548,6 +2719,18 @@ def _worker_post_json(
 
 _WORKER_RETRY_INITIAL_DELAY_S = 1.0
 _WORKER_RETRY_MAX_DELAY_S = 30.0
+_WORKER_RESULT_MIN_TIMEOUT_S = 30.0
+_WORKER_RESULT_TIMEOUT_GRACE_S = 15.0
+_WORKER_RESULT_MIN_UPLOAD_BYTES_PER_S = 16 * 1024
+
+
+def _worker_result_request_timeout_s(result: dict[str, Any]) -> float:
+    body_bytes = len(json.dumps(result).encode("utf-8"))
+    transfer_budget_s = body_bytes / _WORKER_RESULT_MIN_UPLOAD_BYTES_PER_S
+    return max(
+        _WORKER_RESULT_MIN_TIMEOUT_S,
+        _WORKER_RESULT_TIMEOUT_GRACE_S + transfer_budget_s,
+    )
 
 
 def _worker_poll_request_timeout_s(data: dict[str, Any]) -> float | None:
@@ -2580,6 +2763,51 @@ def _worker_error_is_retryable(exc: Exception) -> bool:
     return not isinstance(exc, ValueError)
 
 
+def _worker_post_json_in_cancellable_thread(
+    url: str,
+    payload: dict[str, Any],
+    headers: dict[str, str] | None,
+    timeout: float | None,
+    cancellation: _WorkerRequestCancellation,
+) -> dict[str, Any]:
+    previous = getattr(_worker_request_context, "cancellation", None)
+    _worker_request_context.cancellation = cancellation
+    try:
+        return _worker_post_json(url, payload, headers, timeout)
+    finally:
+        if previous is None:
+            with contextlib.suppress(AttributeError):
+                del _worker_request_context.cancellation
+        else:
+            _worker_request_context.cancellation = previous
+
+
+async def _worker_post_json_cancellable(
+    url: str,
+    payload: dict[str, Any],
+    headers: dict[str, str] | None,
+    timeout: float | None,
+) -> dict[str, Any]:
+    cancellation = _WorkerRequestCancellation()
+    request = asyncio.create_task(
+        asyncio.to_thread(
+            _worker_post_json_in_cancellable_thread,
+            url,
+            payload,
+            headers,
+            timeout,
+            cancellation,
+        )
+    )
+    try:
+        return await asyncio.shield(request)
+    except asyncio.CancelledError:
+        cancellation.cancel()
+        with contextlib.suppress(Exception):
+            await asyncio.shield(request)
+        raise
+
+
 async def _worker_post_json_forever(
     url: str,
     payload: dict[str, Any],
@@ -2588,8 +2816,11 @@ async def _worker_post_json_forever(
     operation: str = "request",
 ) -> dict[str, Any]:
     attempt = 0
+    cancellable = urllib.parse.urlsplit(url).path.endswith(f"{REMOTE_API_PREFIX}/result")
     while True:
         try:
+            if cancellable:
+                return await _worker_post_json_cancellable(url, payload, headers, timeout)
             return await asyncio.to_thread(_worker_post_json, url, payload, headers, timeout)
         except Exception as exc:  # noqa: BLE001
             if not _worker_error_is_retryable(exc):
@@ -2760,30 +2991,38 @@ async def _submit_worker_result_with_heartbeat(
     headers: dict[str, str],
     heartbeat_interval_s: float,
 ) -> dict[str, Any]:
+    result_timeout_s = _worker_result_request_timeout_s(result)
     submission = asyncio.create_task(
         _worker_post_json_forever(
             f"{server}{REMOTE_API_PREFIX}/result",
             result,
             headers,
-            30,
+            result_timeout_s,
             "submit result",
         )
     )
+    cancelled_by_controller = False
 
     async def heartbeat_loop() -> None:
+        nonlocal cancelled_by_controller
         interval = max(0.01, heartbeat_interval_s)
         while not submission.done():
             await asyncio.sleep(interval)
             if submission.done():
                 return
             try:
-                await asyncio.to_thread(
+                response = await asyncio.to_thread(
                     _worker_post_json,
                     f"{server}{REMOTE_API_PREFIX}/heartbeat",
-                    {},
+                    {"job_id": result.get("job_id")},
                     headers,
                     30,
                 )
+                data = response.get("data", {}) if isinstance(response, dict) else {}
+                if data.get("cancelled"):
+                    cancelled_by_controller = True
+                    submission.cancel()
+                    return
             except Exception as exc:  # noqa: BLE001
                 if not _worker_error_is_retryable(exc):
                     return
@@ -2792,9 +3031,125 @@ async def _submit_worker_result_with_heartbeat(
     heartbeat = asyncio.create_task(heartbeat_loop())
     try:
         return await submission
+    except asyncio.CancelledError:
+        if cancelled_by_controller:
+            return {"ok": True, "data": {"accepted": False, "cancelled": True}}
+        raise
     finally:
         heartbeat.cancel()
         await asyncio.gather(heartbeat, return_exceptions=True)
+
+
+async def _run_worker_job(
+    job: dict[str, Any],
+    server: str,
+    headers: dict[str, str],
+    heartbeat_interval_s: float,
+) -> None:
+    expires_at = float(job.get("expires_at") or 0)
+    if expires_at and expires_at < _utc():
+        out = {
+            "job_id": job.get("id"),
+            "ok": False,
+            "error": "TimeoutError",
+            "message": "remote job expired before execution",
+        }
+    else:
+        try:
+            result = await _execute_worker_job_with_heartbeat(
+                job, server, headers, heartbeat_interval_s
+            )
+            out = {"job_id": job["id"], "ok": True, "data": result}
+        except Exception as exc:  # noqa: BLE001
+            out = {"job_id": job.get("id"), **_handled_remote_exception(exc)}
+    await _submit_worker_result_with_heartbeat(out, server, headers, heartbeat_interval_s)
+
+
+@dataclass
+class _WorkerLaneState:
+    polling: int = 0
+    active_jobs: int = 0
+    upgrading: bool = False
+    upgrade_attempt: int = 0
+
+
+async def _worker_poll_lane(
+    lane: str | None,
+    server: str,
+    headers: dict[str, str],
+    heartbeat_interval_s: float,
+    initial_poll_request_timeout_s: float | None,
+    state: _WorkerLaneState,
+    state_changed: asyncio.Event,
+    upgrade_lock: asyncio.Lock,
+) -> None:
+    poll_request_timeout_s = initial_poll_request_timeout_s
+    while True:
+        while state.upgrading:
+            state_changed.clear()
+            if state.upgrading:
+                await state_changed.wait()
+
+        state.polling += 1
+        try:
+            poll_body = await _worker_post_json_forever(
+                f"{server}{REMOTE_API_PREFIX}/poll",
+                _worker_poll_payload(poll_request_timeout_s, lane),
+                headers,
+                poll_request_timeout_s,
+                "poll",
+            )
+        except BaseException:
+            state.polling -= 1
+            state_changed.set()
+            raise
+
+        payload = poll_body.get("data", {})
+        updated_poll_request_timeout_s = _worker_poll_request_timeout_s(payload)
+        if updated_poll_request_timeout_s is not None:
+            poll_request_timeout_s = updated_poll_request_timeout_s
+        upgrade = payload.get("upgrade") if isinstance(payload, dict) else None
+        upgrade_required = isinstance(upgrade, dict) and upgrade.get("required")
+        job = payload.get("job") if isinstance(payload, dict) else None
+
+        state.polling -= 1
+        if job:
+            state.active_jobs += 1
+        if upgrade_required:
+            state.upgrading = True
+        state_changed.set()
+
+        if upgrade_required:
+            async with upgrade_lock:
+                if not state.upgrading:
+                    continue
+                while state.polling or state.active_jobs:
+                    state_changed.clear()
+                    if state.polling or state.active_jobs:
+                        await state_changed.wait()
+                target_version = str(upgrade.get("version") or "")
+                try:
+                    await _upgrade_worker_runtime(server, target_version)
+                except Exception as exc:  # noqa: BLE001
+                    delay_s = _worker_retry_delay(state.upgrade_attempt)
+                    state.upgrade_attempt += 1
+                    state.upgrading = False
+                    state_changed.set()
+                    _worker_log_retry("worker upgrade", exc, delay_s)
+                    await asyncio.sleep(delay_s)
+                else:
+                    state.upgrade_attempt = 0
+                    state.upgrading = False
+                    state_changed.set()
+            continue
+
+        if not job:
+            continue
+        try:
+            await _run_worker_job(job, server, headers, heartbeat_interval_s)
+        finally:
+            state.active_jobs -= 1
+            state_changed.set()
 
 
 async def run_worker(
@@ -2804,9 +3159,10 @@ async def run_worker(
     workdir: str | None = None,
     persist: bool = False,
 ) -> None:
+    from .audit import suppress_audit_archives
     from .remote_worker_service import worker_run_lock
 
-    with worker_run_lock():
+    with worker_run_lock(), suppress_audit_archives():
         await _run_worker_locked(server, invite, name, workdir, persist)
 
 
@@ -2868,6 +3224,7 @@ async def _run_worker_locked(
         machine_name = data["name"]
     heartbeat_interval_s = float(data.get("heartbeat_interval_s") or _remote_heartbeat_interval_s())
     poll_request_timeout_s = _worker_poll_request_timeout_s(data)
+    controller_poll_protocol_version = _worker_poll_protocol_version(data)
     _write_worker_identity(
         {"server": server, "name": machine_name, "access": access, "workdir": workdir}
     )
@@ -2881,54 +3238,41 @@ async def _run_worker_locked(
         flush=True,
     )
     headers = {"Author" + "ization": "B" + "earer " + access}
-    job_notification_task = asyncio.create_task(_worker_job_notification_loop(server, headers))
-    _ = job_notification_task
-    upgrade_attempt = 0
-    while True:
-        poll_body = await _worker_post_json_forever(
-            f"{server}{REMOTE_API_PREFIX}/poll",
-            _worker_poll_payload(poll_request_timeout_s),
-            headers,
-            poll_request_timeout_s,
-            "poll",
+    job_notification_task = asyncio.create_task(
+        _worker_job_notification_loop(server, headers),
+        name="remote-worker-job-notifications",
+    )
+    lane_state = _WorkerLaneState()
+    lane_state_changed = asyncio.Event()
+    upgrade_lock = asyncio.Lock()
+    lanes: tuple[str | None, ...]
+    if controller_poll_protocol_version >= REMOTE_WORKER_LANE_PROTOCOL_VERSION:
+        lanes = (REMOTE_WORKER_INTERACTIVE_LANE, REMOTE_WORKER_TRANSFER_LANE)
+    else:
+        lanes = (None,)
+    lane_tasks = [
+        asyncio.create_task(
+            _worker_poll_lane(
+                lane,
+                server,
+                headers,
+                heartbeat_interval_s,
+                poll_request_timeout_s,
+                lane_state,
+                lane_state_changed,
+                upgrade_lock,
+            ),
+            name=f"remote-worker-{lane or 'legacy'}-lane",
         )
-        payload = poll_body.get("data", {})
-        updated_poll_request_timeout_s = _worker_poll_request_timeout_s(payload)
-        if updated_poll_request_timeout_s is not None:
-            poll_request_timeout_s = updated_poll_request_timeout_s
-        upgrade = payload.get("upgrade") if isinstance(payload, dict) else None
-        if isinstance(upgrade, dict) and upgrade.get("required"):
-            target_version = str(upgrade.get("version") or "")
-            try:
-                await _upgrade_worker_runtime(server, target_version)
-            except Exception as exc:  # noqa: BLE001
-                delay_s = _worker_retry_delay(upgrade_attempt)
-                upgrade_attempt += 1
-                _worker_log_retry("worker upgrade", exc, delay_s)
-                await asyncio.sleep(delay_s)
-            continue
-        upgrade_attempt = 0
-        job = payload.get("job")
-        if not job:
-            continue
-        expires_at = float(job.get("expires_at") or 0)
-        if expires_at and expires_at < _utc():
-            out = {
-                "job_id": job.get("id"),
-                "ok": False,
-                "error": "TimeoutError",
-                "message": "remote job expired before execution",
-            }
-            await _submit_worker_result_with_heartbeat(out, server, headers, heartbeat_interval_s)
-            continue
-        try:
-            result = await _execute_worker_job_with_heartbeat(
-                job, server, headers, heartbeat_interval_s
-            )
-            out = {"job_id": job["id"], "ok": True, "data": result}
-        except Exception as exc:  # noqa: BLE001
-            out = {"job_id": job.get("id"), **_handled_remote_exception(exc)}
-        await _submit_worker_result_with_heartbeat(out, server, headers, heartbeat_interval_s)
+        for lane in lanes
+    ]
+    try:
+        await asyncio.gather(*lane_tasks)
+    finally:
+        for task in lane_tasks:
+            task.cancel()
+        job_notification_task.cancel()
+        await asyncio.gather(*lane_tasks, job_notification_task, return_exceptions=True)
 
 
 def run_worker_cli(argv: list[str] | None = None) -> None:

@@ -1,4 +1,4 @@
-<!-- i18n-source-sha256: 784cf8286b0aba665f54b0b14b7467047ff618447663c4b354d92176796c4001 -->
+<!-- i18n-source-sha256: 63f9fb40c4fd1c085e87c30ed221598cccacef1a6fb4aeb2bb4f1db520590ada -->
 # Tools reference
 
 이 페이지는 실제 MCP tool schema에서 구성됩니다. Public tool surface를 변경한 뒤 `python scripts/generate-tools-reference.py`를 실행해 English reference를 갱신하십시오.
@@ -277,11 +277,12 @@ OAuth scopes: `shell:read, shell:write, shell:execute, browser:use, file:share, 
 
 ### `job_list`
 
-Local 또는 remote machine의 tracked jobs를 나열합니다.
+Local 또는 remote machine의 tracked jobs를 나열합니다. Active job을 먼저 반환하며 `limit`은 1-1000 범위로 제한됩니다.
 
 | Parameter | Type | Required/default | Description |
 |---|---|---|---|
 | `include_finished` | `boolean` | `true` |  |
+| `limit` | `integer` | `100` |  |
 | `machine` | `string \| null` | `null` |  |
 | `logical_session_id` | `string \| null` | required | 이 tool call이 속한 Logical Session입니다. task를 수행하는 동안 session_manage가 반환한 session_id를 전달합니다. active Logical Session이 없을 때만 null을 사용합니다. |
 

@@ -9,6 +9,7 @@ import os
 import shutil
 import tempfile
 import threading
+import time
 from collections.abc import Iterator
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
@@ -21,6 +22,8 @@ BINARY_CHECK_BYTES = 8192
 BINARY_CONTROL_RATIO = 0.30
 BINARY_PREVIEW_BYTES = 256
 BINARY_MESSAGE = "Refusing to read binary file as text"
+_TEMP_FILE_LEASE_SUFFIX = ".local-shell-mcp-active"
+_TEMP_FILE_LEASE_TTL_S = 300.0
 
 
 class FileConflictError(RuntimeError):
@@ -141,6 +144,62 @@ def temp_dir() -> Path:
     return path
 
 
+def _temp_file_lease_marker(path: Path) -> Path:
+    return path.with_name(path.name + _TEMP_FILE_LEASE_SUFFIX)
+
+
+def _is_direct_temp_path(path: Path) -> bool:
+    try:
+        return path.parent.resolve(strict=False) == temp_dir().resolve(strict=False)
+    except OSError:
+        return False
+
+
+def acquire_temp_file_lease(path: Path) -> bool:
+    """Create or refresh a temp-file lease, raising if the marker cannot be written.
+
+    Returns ``True`` only when this call created the marker, which lets callers roll
+    back a lease they introduced if a following publication step fails.
+    """
+
+    if not _is_direct_temp_path(path):
+        return False
+    marker = _temp_file_lease_marker(path)
+    while True:
+        try:
+            marker.touch(exist_ok=False)
+        except FileExistsError:
+            try:
+                os.utime(marker, None)
+            except FileNotFoundError:
+                continue
+            return False
+        return True
+
+
+def refresh_temp_file_lease(path: Path, *, create: bool = True) -> None:
+    """Keep a temp file out of pruning while another process may still be using it."""
+
+    if not _is_direct_temp_path(path):
+        return
+    marker = _temp_file_lease_marker(path)
+    if not create and not marker.exists():
+        return
+    try:
+        acquire_temp_file_lease(path)
+    except OSError:
+        return
+
+
+def release_temp_file_lease(path: Path) -> None:
+    if not _is_direct_temp_path(path):
+        return
+    try:
+        _temp_file_lease_marker(path).unlink(missing_ok=True)
+    except OSError:
+        return
+
+
 def prune_temp_dir() -> None:
     settings = get_settings()
     path = temp_dir()
@@ -149,8 +208,31 @@ def prune_temp_dir() -> None:
     except OSError:
         return
 
-    entries: list[tuple[float, int, Path]] = []
+    now = time.time()
+    active_paths: set[Path] = set()
+    candidates: list[Path] = []
     for item in files:
+        if not item.name.endswith(_TEMP_FILE_LEASE_SUFFIX):
+            candidates.append(item)
+            continue
+        try:
+            age_s = max(0.0, now - item.stat().st_mtime)
+        except OSError:
+            continue
+        if age_s <= _TEMP_FILE_LEASE_TTL_S:
+            target_name = item.name[: -len(_TEMP_FILE_LEASE_SUFFIX)]
+            if target_name:
+                active_paths.add(item.with_name(target_name))
+            continue
+        try:
+            item.unlink()
+        except OSError:
+            continue
+
+    entries: list[tuple[float, int, Path]] = []
+    for item in candidates:
+        if item in active_paths:
+            continue
         try:
             stat = item.stat()
         except OSError:
@@ -690,6 +772,7 @@ def delete_path(path: str, recursive: bool = False) -> dict:
             raise PathNotFoundError(p)
         if p.is_symlink():
             p.unlink()
+            release_temp_file_lease(p)
             return {"path": relative_display(p), "deleted": "link"}
         if p.is_dir():
             if not recursive:
@@ -697,5 +780,6 @@ def delete_path(path: str, recursive: bool = False) -> dict:
             shutil.rmtree(p)
             return {"path": relative_display(p), "deleted": "directory"}
         p.unlink()
+        release_temp_file_lease(p)
         return {"path": relative_display(p), "deleted": "file"}
 

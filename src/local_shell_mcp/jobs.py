@@ -39,6 +39,8 @@ JOB_STORE_VERSION = 2
 JOB_STORE_LEGACY_VERSIONS = {1}
 JOB_STORE_LOCK_TIMEOUT_S = 2.0
 JOB_STORE_LOCK_RETRY_INTERVAL_S = 0.05
+JOB_LIST_DEFAULT_LIMIT = 100
+JOB_LIST_MAX_LIMIT = 1_000
 MANAGED_JOB_STORE_RETRY_ATTEMPTS = 2
 MANAGED_DEFERRED_UPDATE_VERSION = 1
 MANAGED_DEFERRED_APPLIED_KEY = "managed_deferred_update_ids"
@@ -1204,7 +1206,11 @@ async def start_job(
         _ACTIVE_JOB_OPERATIONS.discard(operation_id)
 
 
-async def list_jobs(include_finished: bool = True) -> dict[str, Any]:
+async def list_jobs(
+    include_finished: bool = True,
+    limit: int = JOB_LIST_DEFAULT_LIMIT,
+) -> dict[str, Any]:
+    limit = max(1, min(int(limit), JOB_LIST_MAX_LIMIT))
     active = (
         set()
         if get_settings().disable_local
@@ -1221,17 +1227,32 @@ async def list_jobs(include_finished: bool = True) -> dict[str, Any]:
             if get_settings().disable_local
             else jobs
         )
-        rows = [
-            _public_job(job)
+        candidates = [
+            job
             for job in visible_jobs
             if include_finished or job.get("status") not in TERMINAL_STATUSES
         ]
+        candidates.sort(
+            key=lambda job: (
+                job.get("status") not in TERMINAL_STATUSES,
+                float(job.get("created_at") or 0),
+            ),
+            reverse=True,
+        )
+        total = len(candidates)
+        rows = [_public_job(job) for job in candidates[:limit]]
         counts: dict[str, int] = {}
         for job in visible_jobs:
             status = str(job.get("status") or "unknown")
             counts[status] = counts.get(status, 0) + 1
-    rows.sort(key=lambda item: float(item.get("created_at") or 0), reverse=True)
-    return {"jobs": rows, "counts": counts}
+    returned = len(rows)
+    return {
+        "jobs": rows,
+        "counts": counts,
+        "total": total,
+        "returned": returned,
+        "truncated": returned < total,
+    }
 
 
 async def collect_pending_job_notifications() -> list[dict[str, Any]]:

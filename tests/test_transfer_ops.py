@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import asyncio
 import io
 import tarfile
+import threading
+from pathlib import Path
 
 import pytest
 
+import local_shell_mcp.fs_ops as fs_module
 import local_shell_mcp.tools as tools_module
 import local_shell_mcp.transfer_ops as transfer_module
 from local_shell_mcp.settings import get_settings
@@ -204,6 +208,175 @@ def test_directory_pack_rejects_symlinks_before_archive_creation(tmp_path, monke
         transfer_pack_dir("src")
 
 
+def test_directory_pack_detects_concurrent_source_mutation(tmp_path, monkeypatch):
+    root = _workspace(tmp_path, monkeypatch)
+    source = root / "src" / "payload.bin"
+    source.parent.mkdir()
+    source.write_bytes(b"a" * (128 * 1024))
+    original_read = transfer_module._LeaseRefreshingReader.read
+    mutated = False
+
+    def mutate_after_read(self, size=-1):
+        nonlocal mutated
+        data = original_read(self, size)
+        if data and not mutated:
+            mutated = True
+            with source.open("ab") as handle:
+                handle.write(b"changed")
+        return data
+
+    monkeypatch.setattr(transfer_module._LeaseRefreshingReader, "read", mutate_after_read)
+
+    with pytest.raises(RuntimeError, match="source directory changed during packing"):
+        transfer_pack_dir("src", compression="none")
+
+    assert not list((root / ".local-shell-mcp" / "tmp").glob("transfer-pack-*"))
+
+
+def test_directory_pack_cancellation_removes_active_archive(tmp_path, monkeypatch):
+    root = _workspace(tmp_path, monkeypatch)
+    source = root / "src" / "payload.bin"
+    source.parent.mkdir()
+    source.write_bytes(b"a" * (128 * 1024))
+    cancel_event = threading.Event()
+    original_read = transfer_module._LeaseRefreshingReader.read
+
+    def cancel_on_first_read(self, size=-1):
+        cancel_event.set()
+        return original_read(self, size)
+
+    monkeypatch.setattr(transfer_module._LeaseRefreshingReader, "read", cancel_on_first_read)
+
+    with pytest.raises(InterruptedError, match="cancelled"):
+        transfer_pack_dir("src", compression="none", cancel_event=cancel_event)
+
+    temp = root / ".local-shell-mcp" / "tmp"
+    assert not list(temp.glob("transfer-pack-*"))
+    assert not list(temp.glob("transfer-pack-*.local-shell-mcp-active"))
+
+
+def test_directory_pack_refreshes_archive_lease_for_directory_entries(tmp_path, monkeypatch):
+    root = _workspace(tmp_path, monkeypatch)
+    source = root / "src"
+    (source / "a" / "b" / "c").mkdir(parents=True)
+    original_refresh = transfer_module.refresh_temp_file_lease
+    refreshes: list[tuple[Path, bool]] = []
+    clock = 0.0
+
+    def advancing_monotonic():
+        nonlocal clock
+        clock += transfer_module._TEMP_LEASE_REFRESH_INTERVAL_S + 1.0
+        return clock
+
+    def record_refresh(path, *, create=True):
+        refreshes.append((path, create))
+        original_refresh(path, create=create)
+
+    monkeypatch.setattr(transfer_module.time, "monotonic", advancing_monotonic)
+    monkeypatch.setattr(transfer_module, "refresh_temp_file_lease", record_refresh)
+    monkeypatch.setattr(transfer_module, "_sha256_file", lambda *args, **kwargs: "digest")
+
+    pack = transfer_pack_dir("src", compression="none")
+    archive = transfer_module.resolve_path(pack["archive_path"], must_exist=True)
+    activity_refreshes = [
+        path for path, create in refreshes if path == archive and create is False
+    ]
+
+    assert len(activity_refreshes) >= 2
+
+
+def test_directory_snapshot_polls_cancellation_while_enumerating(tmp_path, monkeypatch):
+    root = _workspace(tmp_path, monkeypatch)
+    source = root / "src"
+    source.mkdir()
+    for name in ("a.txt", "b.txt", "c.txt"):
+        (source / name).write_text(name, encoding="utf-8")
+    cancel_event = threading.Event()
+    original_iterdir = transfer_module.Path.iterdir
+    yielded = 0
+
+    def cancelling_iterdir(path):
+        nonlocal yielded
+        for child in original_iterdir(path):
+            if path == source:
+                yielded += 1
+                if yielded == 1:
+                    cancel_event.set()
+            yield child
+
+    monkeypatch.setattr(transfer_module.Path, "iterdir", cancelling_iterdir)
+
+    with pytest.raises(InterruptedError, match="cancelled"):
+        transfer_module._snapshot_transferable_tree(source, cancel_event)
+
+    assert yielded == 1
+
+
+@pytest.mark.asyncio
+async def test_async_pack_cancellation_waits_for_thread_cleanup(tmp_path, monkeypatch):
+    _workspace(tmp_path, monkeypatch)
+    started = threading.Event()
+    stopped = threading.Event()
+
+    def blocking_pack(path, compression, cancel_event):
+        started.set()
+        assert cancel_event.wait(2)
+        stopped.set()
+        raise InterruptedError("transfer operation was cancelled")
+
+    monkeypatch.setattr(transfer_module, "transfer_pack_dir", blocking_pack)
+    task = asyncio.create_task(transfer_module.transfer_pack_dir_async("src", "none"))
+    for _ in range(100):
+        if started.is_set():
+            break
+        await asyncio.sleep(0.01)
+    assert started.is_set()
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert stopped.is_set()
+
+
+@pytest.mark.asyncio
+async def test_async_pack_cancellation_cleans_late_success_result(tmp_path, monkeypatch):
+    _workspace(tmp_path, monkeypatch)
+    archive = transfer_module.temp_dir() / "late-success.tar"
+    started = threading.Event()
+    release = threading.Event()
+
+    def nearly_finished_pack(path, compression, cancel_event):
+        archive.write_bytes(b"packed")
+        transfer_module.refresh_temp_file_lease(archive)
+        started.set()
+        assert release.wait(2)
+        return {
+            "path": path,
+            "archive_path": transfer_module.relative_display(archive),
+            "bytes": archive.stat().st_size,
+            "sha256": "unused",
+            "compression": compression,
+        }
+
+    monkeypatch.setattr(transfer_module, "transfer_pack_dir", nearly_finished_pack)
+    task = asyncio.create_task(transfer_module.transfer_pack_dir_async("src", "none"))
+    for _ in range(100):
+        if started.is_set():
+            break
+        await asyncio.sleep(0.01)
+    assert started.is_set()
+
+    task.cancel()
+    await asyncio.sleep(0)
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert not archive.exists()
+    assert not fs_module._temp_file_lease_marker(archive).exists()
+
+
 def test_unpack_failure_preserves_existing_destination(tmp_path, monkeypatch):
     root = _workspace(tmp_path, monkeypatch)
     destination = root / "dst"
@@ -236,6 +409,58 @@ def test_transfer_overwrite_false_rechecks_destination_at_finish(tmp_path, monke
 
     assert destination.read_text(encoding="utf-8") == "important"
     transfer_abort_write("dest.txt", begin["transfer_id"])
+
+
+def test_transfer_finish_leases_temp_destination_before_publish(tmp_path, monkeypatch):
+    _workspace(tmp_path, monkeypatch)
+    monkeypatch.setenv("LOCAL_SHELL_MCP_MAX_TMP_FILES", "1")
+    monkeypatch.setenv("LOCAL_SHELL_MCP_MAX_TMP_BYTES", "1")
+    get_settings.cache_clear()
+    destination = transfer_module.temp_dir() / "published.bin"
+    destination_path = transfer_module.relative_display(destination)
+    begin = transfer_begin_write(destination_path, expected_bytes=3)
+    transfer_write_chunk(destination_path, begin["transfer_id"], 0, "bmV3")
+    original_replace = transfer_module.os.replace
+    pruned_after_publish = False
+
+    def replace_then_prune(source, target):
+        nonlocal pruned_after_publish
+        result = original_replace(source, target)
+        if transfer_module.Path(target) == destination:
+            transfer_module.prune_temp_dir()
+            pruned_after_publish = True
+        return result
+
+    monkeypatch.setattr(transfer_module.os, "replace", replace_then_prune)
+
+    result = transfer_finish_write(destination_path, begin["transfer_id"], expected_bytes=3)
+
+    assert pruned_after_publish is True
+    assert result["completed"] is True
+    assert destination.read_bytes() == b"new"
+    assert fs_module._temp_file_lease_marker(destination).exists()
+
+
+def test_transfer_finish_removes_new_destination_lease_if_publish_fails(tmp_path, monkeypatch):
+    _workspace(tmp_path, monkeypatch)
+    destination = transfer_module.temp_dir() / "failed.bin"
+    destination_path = transfer_module.relative_display(destination)
+    begin = transfer_begin_write(destination_path, expected_bytes=3)
+    transfer_write_chunk(destination_path, begin["transfer_id"], 0, "bmV3")
+    original_replace = transfer_module.os.replace
+
+    def fail_final_replace(source, target):
+        if transfer_module.Path(target) == destination:
+            raise OSError("publish failed")
+        return original_replace(source, target)
+
+    monkeypatch.setattr(transfer_module.os, "replace", fail_final_replace)
+
+    with pytest.raises(OSError, match="publish failed"):
+        transfer_finish_write(destination_path, begin["transfer_id"], expected_bytes=3)
+
+    assert not fs_module._temp_file_lease_marker(destination).exists()
+    transfer_abort_write(destination_path, begin["transfer_id"])
 
 
 def test_transfer_chunk_cannot_exceed_declared_size(tmp_path, monkeypatch):
@@ -311,3 +536,45 @@ def test_unpack_reports_post_commit_cleanup_failure_without_rolling_back(tmp_pat
     assert (destination / "new.txt").read_text(encoding="utf-8") == "new"
     assert not (destination / "old.txt").exists()
     assert list(root.glob(".dst.backup-*"))
+
+
+def test_unpack_polls_cancellation_inside_tar_iteration(tmp_path, monkeypatch):
+    root = _workspace(tmp_path, monkeypatch)
+    archive = root / "payload.tar.gz"
+    archive.write_bytes(b"placeholder")
+    cancel_event = threading.Event()
+    saw_wrapped_reader = False
+
+    class CancellingTar:
+        def __init__(self, fileobj):
+            self.fileobj = fileobj
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def __iter__(self):
+            nonlocal saw_wrapped_reader
+            saw_wrapped_reader = isinstance(self.fileobj, transfer_module._LeaseRefreshingReader)
+            cancel_event.set()
+            self.fileobj.read(1)
+            return iter(())
+
+    def fake_tar_open(*args, **kwargs):
+        return CancellingTar(kwargs.get("fileobj"))
+
+    monkeypatch.setattr(transfer_module.tarfile, "open", fake_tar_open)
+
+    with pytest.raises(InterruptedError, match="cancelled"):
+        transfer_unpack_archive(
+            "payload.tar.gz",
+            "dst",
+            overwrite=True,
+            cleanup_archive=False,
+            cancel_event=cancel_event,
+        )
+
+    assert saw_wrapped_reader is True
+    assert not list(root.glob(".dst.unpack-*"))

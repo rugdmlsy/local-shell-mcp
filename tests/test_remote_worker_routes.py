@@ -141,9 +141,12 @@ def without_zstandard(name, *args, **kwargs):
     return original_import(name, *args, **kwargs)
 
 builtins.__import__ = without_zstandard
+import sys
 from local_shell_mcp import audit
 
-assert audit.zstd is None
+assert audit is not None
+assert "local_shell_mcp.audit_archive_codec" not in sys.modules
+assert "zstandard" not in sys.modules
 """
     completed = subprocess.run(
         [sys.executable, "-c", script],

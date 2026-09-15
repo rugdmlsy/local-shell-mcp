@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 import local_shell_mcp.audit as audit_module
+import local_shell_mcp.audit_archive_codec as audit_archive_codec
 from local_shell_mcp.settings import get_settings
 
 
@@ -193,6 +194,9 @@ def test_coalescing_keeps_semantic_child_details_without_duplicate_rows():
         {"event": "download_link_revoked", "path": "/tmp/report.txt", "token": "token-1"}
     ]
     assert rows[0][audit_module._AUDIT_SOURCE_INDEXES] == [0, 1, 2, 3]
+    summary = audit_module._audit_summary_entry(rows[0])
+    assert summary["detail_revision"] == 4
+    assert "related_events" not in summary
     units = audit_module._retention_units([(b"line\n", record, set()) for record in records])
     assert len(units) == 1
     assert [item[0] for item in units[0]] == [0, 1, 2, 3]
@@ -944,7 +948,7 @@ def test_archive_payload_materialization_budget_is_shared_across_batch(tmp_path,
 
     assert archive is not None
     archive_path = audit_module._archive_file_path(log_path, archive["key"])
-    with audit_module.zstd.ZstdDecompressor().stream_reader(archive_path.open("rb")) as reader:
+    with audit_archive_codec.zstd.ZstdDecompressor().stream_reader(archive_path.open("rb")) as reader:
         envelopes = [json.loads(line) for line in reader.read().splitlines()]
     assert envelopes[0]["payloads"]["payload"] == "x" * 16
     assert envelopes[1]["payloads"]["payload"]["error"] == "Audit payload is unavailable"

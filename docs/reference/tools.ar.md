@@ -1,4 +1,4 @@
-<!-- i18n-source-sha256: 784cf8286b0aba665f54b0b14b7467047ff618447663c4b354d92176796c4001 -->
+<!-- i18n-source-sha256: 63f9fb40c4fd1c085e87c30ed221598cccacef1a6fb4aeb2bb4f1db520590ada -->
 # مرجع الأدوات
 
 تُبنى هذه الصفحة من MCP tool schemas الفعلية. شغّل `python scripts/generate-tools-reference.py` بعد تغيير public tool surface لتحديث English reference.
@@ -277,11 +277,12 @@ OAuth scopes: `shell:read, shell:write, shell:execute, browser:use, file:share, 
 
 ### `job_list`
 
-يسرد jobs المتتبعة محليًا أو على machine بعيدة.
+يسرد jobs المتتبعة محليًا أو على machine بعيدة. تُعرض jobs النشطة أولًا، وتُقيّد قيمة `limit` إلى النطاق 1-1000.
 
 | المعامل | النوع | مطلوب/default | الوصف |
 |---|---|---|---|
 | `include_finished` | `boolean` | `true` |  |
+| `limit` | `integer` | `100` |  |
 | `machine` | `string \| null` | `null` |  |
 | `logical_session_id` | `string \| null` | required | Logical Session لاستدعاء الأداة هذا. مرّر session_id الذي أعاده session_manage أثناء العمل على المهمة. استخدم null فقط عندما لا توجد Logical Session نشطة. |
 

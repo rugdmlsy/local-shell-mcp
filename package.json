@@ -1,6 +1,6 @@
 {
   "name": "local-shell-mcp-dsh",
-  "version": "4.2.0+morrow.22",
+  "version": "4.3.2+morrow.1",
   "description": "DeepSeek Harness bridge for the full local-shell-mcp tool surface and per-session Live Workspace.",
   "private": true,
   "type": "module",
@@ -36,7 +36,7 @@
     },
     "category": "extension",
     "displayName": "Local Shell MCP",
-    "image": "https://raw.githubusercontent.com/rugdmlsy/local-shell-mcp/refs/heads/morrow/v4.2/docs/assets/logo.png"
+    "image": "https://raw.githubusercontent.com/rugdmlsy/local-shell-mcp/refs/heads/morrow/v4.3/docs/assets/logo.png"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",

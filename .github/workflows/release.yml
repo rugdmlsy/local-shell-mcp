@@ -40,6 +40,24 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - name: Validate release source
+        shell: bash
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          expected_ref="refs/heads/${DEFAULT_BRANCH}"
+          if [[ "${GITHUB_REF}" != "${expected_ref}" ]]; then
+            echo "Releases must be dispatched from ${expected_ref}; got ${GITHUB_REF}" >&2
+            exit 1
+          fi
+
+          main_sha="$(git ls-remote --exit-code origin "${expected_ref}" | awk '{print $1}')"
+          if [[ -z "${main_sha}" || "${GITHUB_SHA}" != "${main_sha}" ]]; then
+            echo "Release commit ${GITHUB_SHA} is not the current ${DEFAULT_BRANCH} commit ${main_sha:-unknown}" >&2
+            exit 1
+          fi
+
       - name: Validate tag and read project version
         id: version
         env:

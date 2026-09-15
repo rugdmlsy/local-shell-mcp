@@ -1,4 +1,4 @@
-<!-- i18n-source-sha256: 784cf8286b0aba665f54b0b14b7467047ff618447663c4b354d92176796c4001 -->
+<!-- i18n-source-sha256: 63f9fb40c4fd1c085e87c30ed221598cccacef1a6fb4aeb2bb4f1db520590ada -->
 # Tham chiếu tools
 
 Page này được xây từ MCP tool schemas thực tế. Chạy `python scripts/generate-tools-reference.py` sau khi thay đổi public tool surface để cập nhật English reference.
@@ -277,11 +277,12 @@ Khi cung cấp `machine`, call cũng cần `remote:use` và chạy qua giao th�
 
 ### `job_list`
 
-Liệt kê tracked jobs local hoặc trên remote machine.
+Liệt kê tracked jobs local hoặc trên remote machine. Các job đang hoạt động được trả về trước; `limit` được giới hạn trong khoảng 1-1000.
 
 | Parameter | Type | Required/default | Description |
 |---|---|---|---|
 | `include_finished` | `boolean` | `true` |  |
+| `limit` | `integer` | `100` |  |
 | `machine` | `string \| null` | `null` |  |
 | `logical_session_id` | `string \| null` | required | Logical Session cho lần gọi tool này. Khi làm việc trên task, truyền session_id do session_manage trả về. Chỉ dùng null khi không có Logical Session hoạt động. |
 

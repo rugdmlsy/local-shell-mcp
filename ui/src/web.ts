@@ -507,7 +507,7 @@ function activityRows(entries: Activity[], limit = 4): string {
     const failed = kind === "failed"
     return `<div class="activity-item">
       <div class="activity-state ${failed ? "failed" : running ? "running" : "success"}">${running ? "<span></span>" : failed ? ICONS.warning : ICONS.check}</div>
-      <div><strong>${escapeHtml(entry.title || "MCP activity")}</strong><p>${failed ? "Failed" : running ? "Running" : "Completed"} on <b>${escapeHtml(entry.node || "local")}</b></p><small>${relativeTime(entry.timestamp)}</small></div>
+      <div class="activity-copy"><strong>${escapeHtml(entry.title || "MCP activity")}</strong><p>${failed ? "Failed" : running ? "Running" : "Completed"} on <b>${escapeHtml(entry.node || "local")}</b></p><small>${relativeTime(entry.timestamp)}</small></div>
       <span class="duration ${running ? "live" : ""}">${running ? "LIVE" : failed ? "FAILED" : "OK"}</span>
     </div>`
   }).join("")
@@ -567,7 +567,7 @@ function overviewTemplate(data: DashboardData): string {
     <div class="status-stats"><div><strong>${totalMachines}</strong><span>Machines</span></div><div><strong>${activeJobs}</strong><span>Active jobs</span></div><div><strong>${sessions}</strong><span>Sessions</span></div><div><strong>${data.audit_total_24h || 0}</strong><span>MCP calls · 24h</span></div></div>
   </section>
   <section class="metric-grid">
-    ${metricCard({ icon: ICONS.cpu, tone: "violet", label: "CPU usage", value: system.cpu_percent, suffix: "%", detailLeft: `${system.cpu_count || "—"} cores`, detailRight: `Load ${system.load_1m ?? "—"}`, history: metricHistory.cpu, lineClass: "violet-line" })}
+    ${metricCard({ icon: ICONS.cpu, tone: "violet", label: "CPU usage", value: system.cpu_percent, suffix: "%", detailLeft: `Load ${system.load_1m ?? "—"}`, detailRight: `${system.cpu_count || "—"} cores`, history: metricHistory.cpu, lineClass: "violet-line" })}
     ${metricCard({ icon: ICONS.memory, tone: "blue", label: "Memory usage", value: system.memory_percent, suffix: "%", detailLeft: `${formatBytes(system.memory_used_bytes)} used`, detailRight: `${formatBytes(system.memory_total_bytes)} total`, history: metricHistory.memory, lineClass: "blue-line" })}
     ${metricCard({ icon: ICONS.disk, tone: "amber", label: "Workspace disk", value: system.disk_percent, suffix: "%", detailLeft: `${formatBytes(system.disk_used_bytes)} used`, detailRight: `${formatBytes(system.disk_total_bytes)} total`, history: metricHistory.disk, lineClass: "amber-line" })}
     <article class="metric-card network-card"><div class="metric-head"><div class="metric-icon green">${ICONS.network}</div><span class="trend positive">Live</span></div><div class="metric-label">Network throughput</div><div class="network-values"><div><span class="download-arrow">↓</span><strong>${escapeHtml(formatRate(system.network_rx_bps).replace("/s", ""))}</strong><small>received</small></div><div><span class="upload-arrow">↑</span><strong>${escapeHtml(formatRate(system.network_tx_bps).replace("/s", ""))}</strong><small>sent</small></div></div><div class="network-bar"><span style="width:70%"></span><i style="width:30%"></i></div><div class="metric-foot"><span>Downlink</span><span>Uplink</span></div></article>
@@ -769,7 +769,9 @@ async function refreshAll(manual = false): Promise<void> {
 
 function startRefreshTimer(): void {
   stopRefreshTimer()
-  refreshTimer = window.setInterval(() => void refreshAll(false), 5_000)
+  refreshTimer = window.setInterval(() => {
+    if (document.visibilityState !== "hidden") void refreshAll(false)
+  }, 5_000)
 }
 
 function stopRefreshTimer(): void {
@@ -1188,6 +1190,9 @@ loginButton.addEventListener("click", () => void startOAuth("console"))
 loginWebButton.addEventListener("click", () => void startOAuth("overview"))
 refreshButton.addEventListener("click", () => void refreshAll(true))
 openConsoleButton.addEventListener("click", () => showView("console"))
+document.addEventListener("visibilitychange", () => {
+  if (authenticated && document.visibilityState === "visible") void refreshAll(false)
+})
 window.addEventListener("popstate", () => {
   showView(viewFromHash(location.hash) || "overview", { syncHash: false })
 })

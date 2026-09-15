@@ -450,6 +450,10 @@ async def test_failed_remote_directory_pull_removes_local_archive(tmp_path, monk
     async def fake_cleanup(*args, **kwargs):
         del args, kwargs
 
+    async def fake_unpack(*args, **kwargs):
+        del args, kwargs
+        raise ValueError("unpack failed")
+
     monkeypatch.setattr(tools_module, "_remote_transfer_data", fake_remote_data)
     monkeypatch.setattr(
         tools_module, "transfer_alloc_temp_path", lambda suffix: {"path": archive.name}
@@ -457,8 +461,8 @@ async def test_failed_remote_directory_pull_removes_local_archive(tmp_path, monk
     monkeypatch.setattr(tools_module, "_copy_remote_file_to_local", fake_copy)
     monkeypatch.setattr(
         tools_module,
-        "transfer_unpack_archive",
-        lambda *args, **kwargs: (_ for _ in ()).throw(ValueError("unpack failed")),
+        "transfer_unpack_archive_async",
+        fake_unpack,
     )
     monkeypatch.setattr(tools_module, "_remote_cleanup_file", fake_cleanup)
 

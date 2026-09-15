@@ -1,4 +1,4 @@
-<!-- i18n-source-sha256: 784cf8286b0aba665f54b0b14b7467047ff618447663c4b354d92176796c4001 -->
+<!-- i18n-source-sha256: 63f9fb40c4fd1c085e87c30ed221598cccacef1a6fb4aeb2bb4f1db520590ada -->
 # 工具參考
 
 本頁由實際 MCP tool schema 產生。公開工具介面變更後，執行 `python scripts/generate-tools-reference.py` 更新 English 參考頁。
@@ -277,11 +277,12 @@ OAuth scopes: `shell:read, shell:write, shell:execute, browser:use, file:share, 
 
 ### `job_list`
 
-列出本機或 remote machine 上被追蹤的 jobs。
+列出本機或 remote machine 上被追蹤的 jobs。活動中的 jobs 會優先回傳；`limit` 會限制在 1-1000 範圍內。
 
 | 參數 | 類型 | 必填/預設值 | 說明 |
 |---|---|---|---|
 | `include_finished` | `boolean` | `true` |  |
+| `limit` | `integer` | `100` |  |
 | `machine` | `string \| null` | `null` |  |
 | `logical_session_id` | `string \| null` | required | 這次工具呼叫所屬的 Logical Session。處理該任務時，傳入 session_manage 回傳的 session_id。只有在沒有活動 Logical Session 時才使用 null。 |
 

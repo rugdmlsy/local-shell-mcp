@@ -149,7 +149,7 @@ describe("live workspace utilities", () => {
 
     const activateStart = source.indexOf("function activateLiveConfig")
     const activateEnd = source.indexOf("const credentialRefreshes", activateStart)
-    const activateSource = source.slice(activateStart, activateEnd)
+    const activateSource = source.slice(activateStart, activateEnd).replace(/\r\n/g, "\n")
     expect(activateSource).toContain("if (channelChanged) {\n    resetActivityForChannelBoundary()")
     expect(activateSource).not.toContain("if (channelChanged || sessionChanged) {\n    resetActivityForChannelBoundary()")
   })

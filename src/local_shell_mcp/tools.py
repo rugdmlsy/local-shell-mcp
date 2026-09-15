@@ -47,6 +47,7 @@ from .fs_ops import (
 )
 from .image_ops import ImageFile, assert_view_image_size, read_image
 from .jobs import (
+    JOB_LIST_DEFAULT_LIMIT,
     ManagedJobContext,
     list_jobs,
     register_managed_job_handler,
@@ -70,7 +71,7 @@ from .oauth import ALL_OAUTH_SCOPES
 from .patch_ops import git_apply_command, git_apply_prefix, normalize_patch_text
 from .playwright_ops import playwright_run_script
 from .process_utils import managed_process_kwargs
-from .remote import remote_manager
+from .remote import REMOTE_WORKER_TRANSFER_LANE, remote_manager
 from .remote_transfer import (
     create_download_ticket,
     create_upload_ticket,
@@ -112,9 +113,9 @@ from .transfer_ops import (
     DEFAULT_TRANSFER_CHUNK_BYTES,
     normalize_chunk_size,
     transfer_alloc_temp_path,
-    transfer_pack_dir,
+    transfer_pack_dir_async,
     transfer_stat,
-    transfer_unpack_archive,
+    transfer_unpack_archive_async,
 )
 from .version import version_info as get_version_info
 
@@ -1437,7 +1438,9 @@ def _unwrap_remote_transfer_result(result: dict, *, machine: str, tool: str) -> 
 async def _remote_transfer_data(
     machine: str, tool: str, args: dict, timeout_s: int | None = None
 ) -> Any:
-    result = await remote_manager().call(machine, tool, args, timeout_s)
+    result = await remote_manager().call(
+        machine, tool, args, timeout_s, lane=REMOTE_WORKER_TRANSFER_LANE
+    )
     return _unwrap_remote_transfer_result(result, machine=machine, tool=tool)
 
 
@@ -2049,7 +2052,7 @@ async def _copy_packed_dir_to_remote(
                 "cleanup_archive": True,
             },
         )
-    except Exception:
+    except (asyncio.CancelledError, Exception):
         await _remote_cleanup_file(dst_machine, dst_archive.get("path", ""))
         raise
     finally:
@@ -2121,8 +2124,8 @@ async def _copy_remote_dir_to_local(
             total_bytes=pack["bytes"],
             chunks=copy_result["chunks"],
         )
-        unpack = await asyncio.to_thread(
-            transfer_unpack_archive, archive["path"], destination_path, overwrite, True
+        unpack = await transfer_unpack_archive_async(
+            archive["path"], destination_path, overwrite, True
         )
     finally:
         with suppress(Exception):
@@ -2147,7 +2150,7 @@ async def _copy_local_dir_to_remote(
     progress: TransferProgress | None = None,
 ) -> dict:
     await _report_transfer_progress(progress, phase="packing", bytes_transferred=0)
-    pack = await asyncio.to_thread(transfer_pack_dir, source_path, "gz")
+    pack = await transfer_pack_dir_async(source_path, "gz")
     return await _copy_packed_dir_to_remote(
         pack,
         None,
@@ -2716,17 +2719,18 @@ def _register_job_tools(mcp: FastMCP, settings: Any, read_only_tool: ToolAnnotat
     @mcp.tool(structured_output=True, annotations=read_only_tool, meta=shell_read_meta)
     async def job_list(
         include_finished: bool = True,
+        limit: int = JOB_LIST_DEFAULT_LIMIT,
         machine: str | None = None,
     ) -> ToolResult:
-        """List tracked jobs locally or on a remote machine."""
+        """List tracked jobs locally or on a remote machine. Active jobs are returned first; limit is clamped to 1-1000."""
         if machine:
             return await _remote_call(
                 settings,
                 machine,
                 "job_list",
-                {"include_finished": include_finished},
+                {"include_finished": include_finished, "limit": limit},
             )
-        return await _tool_call(list_jobs, include_finished)
+        return await _tool_call(list_jobs, include_finished, limit)
 
     @mcp.tool(structured_output=True, annotations=read_only_tool, meta=shell_read_meta)
     async def job_tail(

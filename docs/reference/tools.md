@@ -285,11 +285,12 @@ When `machine` is supplied, the call additionally requires `remote:use` and runs
 
 ### `job_list`
 
-List tracked jobs locally or on a remote machine.
+List tracked jobs locally or on a remote machine. Active jobs are returned first; limit is clamped to 1-1000.
 
 | Parameter | Type | Required/default | Description |
 |---|---|---|---|
 | `include_finished` | `boolean` | `true` |  |
+| `limit` | `integer` | `100` |  |
 | `machine` | `string \| null` | `null` |  |
 | `logical_session_id` | `string \| null` | required | Logical Session for this tool call. Pass the session_id returned by session_manage while working in that task. Use null only when no Logical Session is active. This is the same durable session_id used by session_manage. |
 

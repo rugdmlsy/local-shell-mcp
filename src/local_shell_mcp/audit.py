@@ -18,18 +18,13 @@ from contextvars import ContextVar
 from pathlib import Path
 from typing import Any
 
-try:
-    import zstandard as zstd
-except ModuleNotFoundError:
-    # Remote workers intentionally use a Python-only bundle so it remains portable
-    # across platforms and Python ABIs. Audit records must still work there even
-    # when the controller-only native archive codec is unavailable.
-    zstd = None  # type: ignore[assignment]
-
 from .settings import get_settings
 from .state_store import get_state_store, state_lock
 
 _AUDIT_ENABLED: ContextVar[bool] = ContextVar("local_shell_mcp_audit_enabled", default=True)
+_AUDIT_ARCHIVE_ENABLED: ContextVar[bool] = ContextVar(
+    "local_shell_mcp_audit_archive_enabled", default=True
+)
 _AUDIT_CALL_ID: ContextVar[str] = ContextVar("local_shell_mcp_audit_call_id", default="")
 _AUDIT_CALL_STATE: ContextVar[dict[str, Any] | None] = ContextVar(
     "local_shell_mcp_audit_call_state", default=None
@@ -892,8 +887,6 @@ def _write_file_archive(
 ) -> dict[str, Any] | None:
     if not indexes:
         return None
-    if zstd is None:
-        raise RuntimeError("zstandard is required to create audit archives")
     start_ts, end_ts = _archive_time_bounds(parsed, indexes)
     key = _archive_key(start_ts, end_ts)
     path = _archive_file_path(log_path, key)
@@ -903,10 +896,12 @@ def _write_file_archive(
     remaining_payload_bytes = _AUDIT_ARCHIVE_MAX_PAYLOAD_MATERIALIZATION_BYTES
     try:
         descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        from . import audit_archive_codec
+
         with (
             os.fdopen(descriptor, "wb") as destination,
-            zstd.ZstdCompressor(level=_AUDIT_ARCHIVE_ZSTD_LEVEL).stream_writer(
-                destination, closefd=False
+            audit_archive_codec.stream_writer(
+                destination, level=_AUDIT_ARCHIVE_ZSTD_LEVEL
             ) as compressor,
         ):
             for index in indexes:
@@ -937,15 +932,15 @@ def _write_state_archive(
 ) -> dict[str, Any] | None:
     if not indexes:
         return None
-    if zstd is None:
-        raise RuntimeError("zstandard is required to create audit archives")
     start_ts, end_ts = _archive_time_bounds(parsed, indexes)
     key = _archive_key(start_ts, end_ts)
+    from . import audit_archive_codec
+
     destination = io.BytesIO()
     raw_bytes = 0
     remaining_payload_bytes = _AUDIT_ARCHIVE_MAX_PAYLOAD_MATERIALIZATION_BYTES
-    with zstd.ZstdCompressor(level=_AUDIT_ARCHIVE_ZSTD_LEVEL).stream_writer(
-        destination, closefd=False
+    with audit_archive_codec.stream_writer(
+        destination, level=_AUDIT_ARCHIVE_ZSTD_LEVEL
     ) as compressor:
         for index in indexes:
             raw_line, record, _payload_ids = parsed[index]
@@ -1040,10 +1035,12 @@ def _enforce_audit_storage_limit(
         return _prune_payload_store(log_path)
 
     archived_indexes = _archived_source_indexes(parsed, selected)
-    if max_archive_bytes > 0 and archived_indexes and zstd is not None:
+    if _AUDIT_ARCHIVE_ENABLED.get() and max_archive_bytes > 0 and archived_indexes:
+        from . import audit_archive_codec
+
         try:
             archive = _write_file_archive(log_path, parsed, archived_indexes)
-        except (OSError, zstd.ZstdError):
+        except (OSError, audit_archive_codec.ZstdError):
             return False
         if archive is not None:
             archive_entries.append(archive)
@@ -1084,7 +1081,7 @@ def _enforce_state_audit_storage_limit(
     archive_entries = _load_state_archive_index()
     if selected is not None:
         archived_indexes = _archived_source_indexes(parsed, selected)
-        if max_archive_bytes > 0 and archived_indexes and zstd is not None:
+        if _AUDIT_ARCHIVE_ENABLED.get() and max_archive_bytes > 0 and archived_indexes:
             archive = _write_state_archive(parsed, archived_indexes)
             if archive is not None:
                 archive_entries.append(archive)
@@ -1148,6 +1145,15 @@ def suppress_audit() -> Iterator[None]:
 
 
 @contextmanager
+def suppress_audit_archives() -> Iterator[None]:
+    token = _AUDIT_ARCHIVE_ENABLED.set(False)
+    try:
+        yield
+    finally:
+        _AUDIT_ARCHIVE_ENABLED.reset(token)
+
+
+@contextmanager
 def audit_call_context(call_id: str) -> Iterator[dict[str, Any]]:
     """Associate implementation-level audit records with one public MCP call."""
 
@@ -1163,13 +1169,7 @@ def audit_call_context(call_id: str) -> Iterator[dict[str, Any]]:
 
 @contextmanager
 def audit_request_context(**fields: Any) -> Iterator[None]:
-    """Attach trusted ingress metadata to every nested audit event.
-
-    Container clients and future non-MCP ingress paths need correlation fields
-    on both their own lifecycle records and the tool implementation records they
-    trigger. Context variables preserve that metadata across awaited calls while
-    keeping concurrent requests isolated.
-    """
+    """Attach trusted ingress metadata to every nested audit event."""
 
     inherited = _AUDIT_REQUEST_FIELDS.get() or {}
     token = _AUDIT_REQUEST_FIELDS.set({**inherited, **fields})
@@ -1555,6 +1555,37 @@ def _public_audit_entry(row: dict[str, Any]) -> dict[str, Any]:
     return {name: value for name, value in row.items() if name != _AUDIT_SOURCE_INDEXES}
 
 
+_AUDIT_SUMMARY_FIELDS = frozenset(
+    {
+        "id",
+        "call_id",
+        "ts",
+        "event",
+        "node",
+        "machine",
+        "operation",
+        "tool",
+        "session",
+        "command",
+        "purpose",
+        "ok",
+        "paired",
+        "status",
+        "duration_ms",
+        "error",
+        "error_type",
+    }
+)
+
+
+def _audit_summary_entry(row: dict[str, Any]) -> dict[str, Any]:
+    summary = {name: value for name, value in row.items() if name in _AUDIT_SUMMARY_FIELDS}
+    source_indexes = row.get(_AUDIT_SOURCE_INDEXES)
+    if isinstance(source_indexes, list):
+        summary["detail_revision"] = len(source_indexes)
+    return summary
+
+
 def _read_audit_records() -> list[dict[str, Any]]:
     settings = get_settings()
     max_bytes = max(1, settings.max_audit_log_bytes)
@@ -1638,6 +1669,7 @@ def query_audit(
     start_ts: float | None = None,
     end_ts: float | None = None,
     sort: str = "desc",
+    summary_only: bool = False,
 ) -> dict[str, Any]:
     """Read, pair, filter, and sort the bounded live audit log."""
 
@@ -1657,8 +1689,12 @@ def query_audit(
     reverse = sort.lower() != "asc"
     matched.sort(key=lambda item: float(item.get("ts") or 0), reverse=reverse)
     total = len(matched)
+    visible = matched[:bounded_limit]
     return {
-        "entries": [_public_audit_entry(row) for row in matched[:bounded_limit]],
+        "entries": [
+            _audit_summary_entry(row) if summary_only else _public_audit_entry(row)
+            for row in visible
+        ],
         "count": min(total, bounded_limit),
         "total_matched": total,
     }

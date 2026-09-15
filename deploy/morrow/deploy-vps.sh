@@ -6,7 +6,7 @@ usage() {
 usage: deploy/morrow/deploy-vps.sh [--dry-run]
 
 Build and atomically deploy the current pushed Morrow release to the production VPS.
-The release tag is derived from the 4.2.0+morrow.N version in pyproject.toml.
+The release tag is derived from the X.Y.Z+morrow.N version in pyproject.toml.
 EOF
 }
 
