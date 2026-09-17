@@ -236,6 +236,7 @@ jobs:
             coverage.json
             coverage.xml
           if-no-files-found: error
+          retention-days: 3
 
 
   python-tests:
@@ -506,6 +507,7 @@ jobs:
           name: package-${{ matrix.artifact }}
           path: dist/*
           if-no-files-found: error
+          retention-days: 3
 
 
   standalone-binary:
@@ -734,6 +736,7 @@ jobs:
           name: vscode-${{ matrix.label }}
           path: dist/*.vsix
           if-no-files-found: error
+          retention-days: 3
 
   npm-launcher:
     name: npm launcher
