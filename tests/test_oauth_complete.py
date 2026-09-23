@@ -411,12 +411,21 @@ def test_complete_authorization_code_flow_and_token_failures(tmp_path, monkeypat
         "client_id": client_id,
         "redirect_uri": redirect,
         "scope": "shell:read shell:execute",
-        "resource": "http://testserver",
+        # CodeBuddy normalizes an origin resource to include a trailing slash.
+        # The server must issue the canonical audience advertised in metadata.
+        "resource": "http://testserver/",
         "state": "opaque-state",
         "code_challenge": _challenge(verifier),
         "code_challenge_method": "S256",
         "pin": "correct-admin-pin",
     }
+
+    wrong_resource = client.get(
+        "/oauth/authorize",
+        params={**params, "resource": "http://other.test", "pin": None},
+    )
+    assert wrong_resource.status_code == 200
+    assert "resource does not match this protected resource" in wrong_resource.text
 
     approved = client.post("/oauth/authorize", data=params, follow_redirects=False)
     assert approved.status_code == 302

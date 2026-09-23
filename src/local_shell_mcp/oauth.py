@@ -109,6 +109,23 @@ def resource_url(request: Request | None = None) -> str:
     return (settings.oauth_resource or public_base_url(request)).rstrip("/")
 
 
+def _canonical_requested_resource(value: str | None, request: Request | None = None) -> str | None:
+    """Return this server's canonical resource URI for an equivalent request.
+
+    Some MCP OAuth clients normalize an origin resource to include a trailing slash even
+    when protected-resource metadata advertises the bare origin. Treat those two root
+    forms as equivalent, but do not accept a different path, host, scheme, query, or
+    fragment as this protected resource.
+    """
+    canonical = resource_url(request)
+    if not value:
+        return canonical
+    requested = value.strip()
+    if requested == canonical or requested == f"{canonical}/":
+        return canonical
+    return None
+
+
 def _scopes() -> list[str]:
     return list(ALL_OAUTH_SCOPES)
 
@@ -532,6 +549,8 @@ def _validate_authorize_params(params: dict[str, str]) -> str | None:
         return "Missing code_challenge"
     if params.get("code_challenge_method") != "S256":
         return "Only code_challenge_method=S256 is supported"
+    if _canonical_requested_resource(params.get("resource")) is None:
+        return "resource does not match this protected resource"
     return None
 
 
@@ -751,7 +770,7 @@ async def oauth_authorize_post(request: Request) -> Response:
         client_id=params["client_id"],
         redirect_uri=params["redirect_uri"],
         scope=_scope_value(),
-        resource=params.get("resource") or resource_url(request),
+        resource=_canonical_requested_resource(params.get("resource"), request) or resource_url(request),
         code_challenge=params.get("code_challenge"),
         code_challenge_method=params.get("code_challenge_method"),
     )
