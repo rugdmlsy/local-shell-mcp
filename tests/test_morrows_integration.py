@@ -21,6 +21,7 @@ from local_shell_mcp.main import _build_mcp_http_app
 from local_shell_mcp.session_runtime import SessionRuntimeManager, get_session_runtime_manager
 from local_shell_mcp.settings import get_settings
 from local_shell_mcp.shell_ops import read_shell, shell_owner, start_shell
+from local_shell_mcp.state_store import get_state_store
 from local_shell_mcp.tools import build_mcp
 
 
@@ -89,6 +90,35 @@ def test_cleanup_fence_invalidates_an_issue_that_was_already_in_progress(tmp_pat
     assert resolve_capability(issued["capability"]) is None
     with pytest.raises(ValueError, match="blocked"):
         issue_capability(session_id, "shared")
+
+
+def test_capability_resolve_rechecks_under_the_revoke_lock(tmp_path, monkeypatch):
+    _settings(tmp_path, monkeypatch)
+    session_id = get_session_runtime_manager().manage("shared", action="start")["session_id"]
+    issued = issue_capability(session_id, "shared")
+    capability_key = f"session-capabilities/{issued['capability_id']}.json"
+    store = get_state_store()
+    original_read = store.read_bytes
+    first_read = Event()
+    continue_resolve = Event()
+
+    def pause_after_old_record(key):
+        value = original_read(key)
+        if key == capability_key and not first_read.is_set():
+            first_read.set()
+            assert continue_resolve.wait(5)
+        return value
+
+    monkeypatch.setattr(store, "read_bytes", pause_after_old_record)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        pending = pool.submit(resolve_capability, issued["capability"])
+        try:
+            assert first_read.wait(5)
+            revoked = pool.submit(revoke_capability, issued["capability_id"])
+            assert revoked.result(timeout=5) == session_id
+        finally:
+            continue_resolve.set()
+        assert pending.result(timeout=5) is None
 
 
 def test_resolved_local_and_transfer_nodes_are_only_a_session_index(tmp_path):

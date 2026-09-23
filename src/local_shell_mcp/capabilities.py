@@ -79,16 +79,28 @@ def resolve_capability(token: str | None) -> dict[str, Any] | None:
     if not token:
         return None
     capability_id = hashlib.sha256(token.encode("utf-8")).hexdigest()
-    raw = get_state_store().read_bytes(_key(capability_id))
+    store = get_state_store()
+    raw = store.read_bytes(_key(capability_id))
     if raw is None:
         return None
     record = json.loads(raw)
     if not isinstance(record, dict) or not isinstance(record.get("session_id"), str):
         return None
-    state = _load_state(record["session_id"])
-    if state.get("blocked") or int(record.get("generation", 0)) != int(state.get("generation", 0)):
-        return None
-    return {**record, "capability_id": capability_id}
+    session_id = record["session_id"]
+    # The first read locates the Session lock. Re-read both durable objects
+    # inside it: revoke must either follow this admission or finish before it.
+    with store.lock(_lock_key(session_id)):
+        current_raw = store.read_bytes(_key(capability_id))
+        if current_raw is None:
+            return None
+        current = json.loads(current_raw)
+        if not isinstance(current, dict) or current.get("session_id") != session_id:
+            return None
+        state = _load_state(session_id)
+        if (state.get("blocked") or state.get("current_id") != capability_id
+            or int(current.get("generation", 0)) != int(state.get("generation", 0))):
+            return None
+        return {**current, "capability_id": capability_id}
 
 
 def revoke_capability(capability_id: str) -> str | None:
