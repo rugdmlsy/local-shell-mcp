@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import hmac
+from contextlib import nullcontext
 from typing import Any
 
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
-from .audit import query_audit
+from .audit import audit, audit_request_context, query_audit
 from .capabilities import issue_capability, revoke_capability, revoke_session_capabilities
 from .execution_scope import execution_session
 from .jobs import TERMINAL_STATUSES, list_jobs, stop_job, tail_job
@@ -33,12 +34,31 @@ def _response(data: dict[str, Any], status_code: int = 200) -> JSONResponse:
 async def _guarded(request: Request, handler) -> JSONResponse:  # noqa: ANN001
     if not _authorized(request):
         return _response({"error": "control credential required"}, 401)
-    try:
-        return _response(await handler(request))
-    except (KeyError, ValueError, PermissionError) as exc:
-        return _response({"error": str(exc)}, 400)
-    except Exception as exc:  # noqa: BLE001 - return a stable control-plane error.
-        return _response({"error": f"{type(exc).__name__}: {exc}"}, 500)
+    mutation = request.method != "GET"
+    context = (
+        audit_request_context(
+            actor="control", ingress="control", logical_session=request.path_params.get("session_id")
+        )
+        if mutation else nullcontext()
+    )
+    with context:
+        if mutation:
+            audit("control_request_started", operation=handler.__name__)
+        try:
+            result = await handler(request)
+            if mutation:
+                audit("control_request_completed", operation=handler.__name__, ok=True)
+            return _response(result)
+        except (KeyError, ValueError, PermissionError) as exc:
+            if mutation:
+                audit("control_request_completed", operation=handler.__name__, ok=False,
+                      error=str(exc))
+            return _response({"error": str(exc)}, 400)
+        except Exception as exc:  # noqa: BLE001 - return a stable control-plane error.
+            if mutation:
+                audit("control_request_completed", operation=handler.__name__, ok=False,
+                      error=str(exc))
+            return _response({"error": f"{type(exc).__name__}: {exc}"}, 500)
 
 
 def _session_id(request: Request) -> str:
@@ -57,6 +77,8 @@ async def _start(request: Request) -> dict[str, Any]:
         objective=body.get("objective"),
         actor="control",
     )
+    audit("control_session_started", logical_session=session["session_id"],
+          idempotency_key=body.get("idempotency_key"))
     return {"session": session}
 
 
@@ -72,6 +94,8 @@ async def _lifecycle(request: Request) -> dict[str, Any]:
         raise ValueError("control lifecycle action must be finish, cancel, or delete")
     session_id = _session_id(request)
     subject = str(body["subject"])
+    await asyncio.to_thread(get_session_runtime_manager().get, session_id, subject=subject)
+    revoke_session_capabilities(session_id, block=True)
     session = await asyncio.to_thread(
         get_session_runtime_manager().manage,
         subject,
@@ -79,8 +103,6 @@ async def _lifecycle(request: Request) -> dict[str, Any]:
         session_id=session_id,
         actor="control",
     )
-    if action in {"finish", "cancel", "delete"}:
-        revoke_session_capabilities(session_id)
     return {"session": session}
 
 
@@ -88,18 +110,22 @@ async def _issue(request: Request) -> dict[str, Any]:
     body = await request.json()
     session_id = _session_id(request)
     subject = str(body["subject"])
-    session = await asyncio.to_thread(
-        get_session_runtime_manager().get, session_id, subject=subject
-    )
-    if session["status"] != "active":
-        raise ValueError("cannot issue a capability for a terminal Session")
-    revoke_session_capabilities(session_id)
-    return issue_capability(session_id, subject)
+    def verify_active() -> None:
+        session = get_session_runtime_manager().get(session_id, subject=subject)
+        if session["status"] != "active":
+            raise ValueError("cannot issue a capability for a terminal Session")
+
+    issued = await asyncio.to_thread(issue_capability, session_id, subject, verify_active)
+    audit("control_capability_issued", logical_session=session_id,
+          capability_id=issued["capability_id"])
+    return issued
 
 
 async def _revoke(request: Request) -> dict[str, Any]:
     capability_id = str(request.path_params["capability_id"])
-    revoke_capability(capability_id)
+    session_id = revoke_capability(capability_id)
+    audit("control_capability_revoked", logical_session=session_id,
+          capability_id=capability_id)
     return {"revoked": True, "capability_id": capability_id}
 
 
@@ -107,7 +133,12 @@ async def _node_call(
     node: str, tool: str, args: dict[str, Any], session_id: str
 ) -> dict[str, Any]:
     if node == "local":
-        with execution_session(session_id):
+        mutation = tool in {"job_stop", "shell_kill"}
+        audit_context = (
+            audit_request_context(actor="control", ingress="control", logical_session=session_id)
+            if mutation else nullcontext()
+        )
+        with execution_session(session_id), audit_context:
             if tool == "job_list":
                 return await list_jobs(args.get("include_finished", True), args.get("limit", 1000))
             if tool == "shell_list":
@@ -122,7 +153,8 @@ async def _node_call(
     result = await remote_manager().call(
         node,
         tool,
-        {**args, "_logical_session_id": session_id, "_execution_machine": node},
+        {**args, "_logical_session_id": session_id, "_execution_machine": node,
+         **({"_control_actor": True} if tool in {"job_stop", "shell_kill"} else {})},
         timeout_s=5,
     )
     if not result.get("ok"):
@@ -200,7 +232,9 @@ async def _cleanup(request: Request) -> dict[str, Any]:
     if terminal_action not in {"cancel", "finish"}:
         raise ValueError("terminal_action must be cancel or finish")
     timeout_s = max(0, min(float(body.get("wait_seconds", 30)), 30))
-    revoke_session_capabilities(session_id)
+    await asyncio.to_thread(get_session_runtime_manager().get, session_id, subject=subject)
+    revoked = revoke_session_capabilities(session_id, block=True)
+    audit("control_capabilities_blocked", revoked=revoked)
     jobs = await _enumerate(session_id, "jobs")
     shells = await _enumerate(session_id, "shells")
     failures: list[str] = []

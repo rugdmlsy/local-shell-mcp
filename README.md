@@ -273,6 +273,8 @@ pytest -q
 mkdocs build --strict
 ```
 
+For a `uv` checkout, run `PYTHONPATH=src uv run pytest -q` so tests import the repository source rather than a separately installed LSM worker runtime. Pytest also adds `src` through `pyproject.toml`.
+
 Build the VS Code extension:
 
 ```bash

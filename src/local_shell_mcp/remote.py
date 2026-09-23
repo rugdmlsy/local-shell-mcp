@@ -2094,9 +2094,15 @@ async def execute_worker_tool(tool: str, args: dict[str, Any]) -> Any:
     human = bool(call_args.pop("_human", False))
     logical_session_id = call_args.pop("_logical_session_id", None)
     execution_node = str(call_args.pop("_execution_machine", "local"))
+    control_actor = bool(call_args.pop("_control_actor", False))
+    from .audit import audit_request_context
     from .execution_scope import execution_machine, execution_session
 
-    with execution_session(logical_session_id), execution_machine(execution_node):
+    audit_context = (
+        audit_request_context(actor="control", ingress="control", logical_session=logical_session_id)
+        if control_actor else contextlib.nullcontext()
+    )
+    with execution_session(logical_session_id), execution_machine(execution_node), audit_context:
         if human:
             with suppress_audit():
                 return await _execute_worker_tool_inner(tool, call_args)

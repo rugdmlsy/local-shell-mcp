@@ -1,13 +1,20 @@
 from __future__ import annotations
 
+import json
 from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier, Event
 
 import pytest
 from starlette.testclient import TestClient
 
 from local_shell_mcp.audit import audit, query_audit
 from local_shell_mcp.auth import _CURRENT_PRINCIPAL, Principal
-from local_shell_mcp.capabilities import issue_capability, resolve_capability, revoke_capability
+from local_shell_mcp.capabilities import (
+    issue_capability,
+    resolve_capability,
+    revoke_capability,
+    revoke_session_capabilities,
+)
 from local_shell_mcp.execution_scope import execution_session
 from local_shell_mcp.jobs import list_jobs, start_managed_job, tail_job
 from local_shell_mcp.main import _build_mcp_http_app
@@ -42,6 +49,46 @@ def test_keyed_session_is_concurrent_durable_and_replayable_after_terminal_delet
     assert second.manage("other", action="start", idempotency_key="external:42")["session_id"] != session_id
     first.manage("shared", action="delete", session_id=session_id)
     assert second.manage("shared", action="start", idempotency_key="external:42")["session_id"] != session_id
+
+
+def test_concurrent_capability_rotation_leaves_only_one_usable_token(tmp_path, monkeypatch):
+    _settings(tmp_path, monkeypatch)
+    session_id = get_session_runtime_manager().manage("shared", action="start")["session_id"]
+    start = Barrier(3)
+
+    def issue():
+        start.wait()
+        return issue_capability(session_id, "shared")
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(issue)
+        second = pool.submit(issue)
+        start.wait()
+        tokens = [first.result()["capability"], second.result()["capability"]]
+    assert sum(resolve_capability(token) is not None for token in tokens) == 1
+
+
+def test_cleanup_fence_invalidates_an_issue_that_was_already_in_progress(tmp_path, monkeypatch):
+    _settings(tmp_path, monkeypatch)
+    session_id = get_session_runtime_manager().manage("shared", action="start")["session_id"]
+    checked = Event()
+    continue_issue = Event()
+
+    def verify_active():
+        assert get_session_runtime_manager().get(session_id, subject="shared")["status"] == "active"
+        checked.set()
+        assert continue_issue.wait(5)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        pending = pool.submit(issue_capability, session_id, "shared", verify_active)
+        assert checked.wait(5)
+        cleanup = pool.submit(revoke_session_capabilities, session_id, block=True)
+        continue_issue.set()
+        issued = pending.result()
+        cleanup.result()
+    assert resolve_capability(issued["capability"]) is None
+    with pytest.raises(ValueError, match="blocked"):
+        issue_capability(session_id, "shared")
 
 
 def test_resolved_local_and_transfer_nodes_are_only_a_session_index(tmp_path):
@@ -119,6 +166,67 @@ async def test_remote_resource_query_reports_partial_results(tmp_path, monkeypat
     result = await control_plane._enumerate(session_id, "jobs")
     assert result["complete"] is False
     assert result["unreachable_machines"] == ["node-offline"]
+
+
+@pytest.mark.asyncio
+async def test_control_resource_mutations_carry_actor_and_session_on_local_and_remote(tmp_path, monkeypatch):
+    _settings(tmp_path, monkeypatch)
+    from local_shell_mcp import control_plane, remote
+
+    async def local_stop(job_id):
+        audit("job_stop", job_id=job_id, session="shell-local")
+        return {"job_id": job_id, "stopped": True}
+
+    async def remote_stop(_tool, args):
+        audit("job_stop", job_id=args["job_id"], session="shell-remote")
+        return {"job_id": args["job_id"], "stopped": True}
+
+    monkeypatch.setattr(control_plane, "stop_job", local_stop)
+    monkeypatch.setattr(remote, "_execute_worker_tool_inner", remote_stop)
+    await control_plane._node_call("local", "job_stop", {"job_id": "j_local"}, "s_control")
+    await remote.execute_worker_tool("job_stop", {
+        "job_id": "j_remote", "_logical_session_id": "s_control",
+        "_execution_machine": "node-01", "_control_actor": True,
+    })
+    records = [json.loads(line) for line in get_settings().audit_log_path.read_text().splitlines()]
+    stops = [record for record in records if record.get("event") == "job_stop"]
+    assert {record["job_id"] for record in stops} == {"j_local", "j_remote"}
+    assert all(record["actor"] == "control" and record["ingress"] == "control"
+               and record["logical_session"] == "s_control" for record in stops)
+
+
+@pytest.mark.asyncio
+async def test_explicitly_offline_node_is_rejected_before_dispatch_and_not_indexed(tmp_path, monkeypatch):
+    _settings(tmp_path, monkeypatch)
+    monkeypatch.setenv("LOCAL_SHELL_MCP_REMOTE_ENABLED", "true")
+    get_settings.cache_clear()
+    from local_shell_mcp import tools as tool_module
+
+    class OfflineRemote:
+        calls = 0
+
+        def list_machines(self):
+            return {"machines": [{"name":"node-offline", "status":"offline",
+                                  "wake":{"provider_configured":False}}]}
+
+        async def call(self, *_args, **_kwargs):
+            self.calls += 1
+            raise AssertionError("an offline node must not receive a call")
+
+    remote = OfflineRemote()
+    monkeypatch.setattr(tool_module, "remote_manager", lambda: remote)
+    session_id = get_session_runtime_manager().manage("shared", action="start")["session_id"]
+    token = _CURRENT_PRINCIPAL.set(Principal(
+        email=None, subject="shared", claims={"auth":"none","bound_session":session_id}))
+    try:
+        tool = build_mcp()._tool_manager._tools["run_shell"]
+        result = await tool.fn(command="true", machine="node-offline",
+                               logical_session_id=session_id)
+    finally:
+        _CURRENT_PRINCIPAL.reset(token)
+    assert "remote machine is offline" in str(result)
+    assert remote.calls == 0
+    assert get_session_runtime_manager().get(session_id, subject="shared")["machines_touched"] == []
 
 
 @pytest.mark.asyncio
@@ -203,12 +311,20 @@ def test_control_cleanup_wait_is_bounded_and_never_reports_false_cancel(tmp_path
     capability = issue_capability(session_id, "shared")
     headers = {"X-LSM-Control-Key":"trusted-control-key"}
     with TestClient(_build_mcp_http_app(build_mcp()), base_url="http://testserver") as client:
+        wrong_subject = client.post(f"/api/control/sessions/{session_id}/cleanup", headers=headers,
+            json={"subject":"other","wait_seconds":0})
+        assert wrong_subject.status_code == 400
+        assert resolve_capability(capability["capability"]) is not None
         pending = client.post(f"/api/control/sessions/{session_id}/cleanup", headers=headers,
             json={"subject":"shared","wait_seconds":0})
         assert pending.status_code == 200
         assert pending.json()["complete"] is False
         assert pending.json()["session"]["status"] == "active"
         assert resolve_capability(capability["capability"]) is None
+        denied = client.post(f"/api/control/sessions/{session_id}/capabilities", headers=headers,
+            json={"subject":"shared"})
+        assert denied.status_code == 400
+        assert "blocked" in denied.json()["error"]
         manager.finish_tool_call(lease, "tool.completed")
         cleaned = client.post(f"/api/control/sessions/{session_id}/cleanup", headers=headers,
             json={"subject":"shared","wait_seconds":0})

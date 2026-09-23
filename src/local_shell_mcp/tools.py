@@ -901,6 +901,7 @@ def _install_mcp_tool_watchdogs(mcp: FastMCP) -> None:
             principal_subject = _current_principal_subject()
             live_arguments = _live_event_arguments(__tool_name, safe_call_arguments)
             logical_lease = None
+            pre_dispatch_remote_error: str | None = None
             normalized_tool_action = str(call_arguments.get("action") or "").strip().lower()
             tracks_session_activity = __tool_name not in {
                 "session_manage",
@@ -920,14 +921,28 @@ def _install_mcp_tool_watchdogs(mcp: FastMCP) -> None:
                         execution_machines = [str(call_arguments.get("machine") or "local").strip()]
                     remote_nodes = {node for node in execution_machines if node != "local"}
                     if remote_nodes and logical_session_id:
-                        registered = (
-                            {str(item.get("name")) for item in remote_manager().list_machines().get("machines", [])}
-                            if get_settings().remote_enabled else set()
+                        snapshot = (
+                            remote_manager().list_machines().get("machines", [])
+                            if get_settings().remote_enabled else []
                         )
-                        if remote_nodes - registered:
+                        registered = {str(item.get("name")): item for item in snapshot}
+                        if remote_nodes - registered.keys():
                             # The underlying tool returns its established structured
                             # error. No execution node was actually resolved.
                             execution_machines = []
+                        else:
+                            definitely_offline = sorted(
+                                node for node in remote_nodes
+                                if registered[node].get("status") == "offline"
+                                and not (registered[node].get("wake") or {}).get("provider_configured")
+                            )
+                            if definitely_offline:
+                                # Refuse before dispatch so an offline snapshot cannot
+                                # omit a node that later receives a newly queued call.
+                                execution_machines = []
+                                pre_dispatch_remote_error = (
+                                    f"remote machine is offline: {definitely_offline[0]}"
+                                )
                     logical_lease = await asyncio.to_thread(
                         logical_manager.begin_tool_call,
                         logical_session_id,
@@ -1033,7 +1048,9 @@ def _install_mcp_tool_watchdogs(mcp: FastMCP) -> None:
                 raise
             try:
                 with audit_call_context(call_id) as call_state, execution_session(logical_session_id):
-                    if local_access_error is not None:
+                    if pre_dispatch_remote_error is not None:
+                        result = _handled_error(RuntimeError(pre_dispatch_remote_error))
+                    elif local_access_error is not None:
                         result = _handled_error(RuntimeError(local_access_error))
                     elif __tool_name in NON_CANCELLABLE_TOOL_NAMES:
                         result = await _await_non_cancellable(
