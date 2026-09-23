@@ -290,4 +290,5 @@ Contribution workflow is documented in [CONTRIBUTING.md](CONTRIBUTING.md).
 - [Code of conduct](CODE_OF_CONDUCT.md)
 - [Support guide](SUPPORT.md)
 - [OAuth setup](OAUTH_SETUP.md)
+- [Logical Session control API](docs/control-plane-api.md)
 - [License](LICENSE)

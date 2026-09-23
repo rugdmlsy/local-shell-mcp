@@ -458,6 +458,8 @@ if _PYDANTIC_AVAILABLE:
 
         # Authentication. OAuth is the default for ChatGPT custom connectors.
         auth_mode: Literal["none", "oauth"] = "oauth"
+        control_api_key: str | None = None
+        require_session_capability: bool = False
         auth_bypass_localhost: bool = True
         require_auth_for_mcp_discovery: bool = True
         mcp_session_idle_timeout_s: int = 180
@@ -694,6 +696,8 @@ else:
         python_bin: str = field(default_factory=default_python_executable)
 
         auth_mode: Literal["none", "oauth"] = "oauth"
+        control_api_key: str | None = None
+        require_session_capability: bool = False
         auth_bypass_localhost: bool = True
         require_auth_for_mcp_discovery: bool = True
         mcp_session_idle_timeout_s: int = 180

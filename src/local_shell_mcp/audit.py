@@ -1394,6 +1394,8 @@ def _new_call_entry(record: dict[str, Any], index: int) -> dict[str, Any]:
     session = _record_session(record)
     if session:
         entry["session"] = session
+    if record.get("logical_session"):
+        entry["logical_session_id"] = str(record["logical_session"])
     call_input = _call_input(record)
     if call_input is not None:
         entry["input"] = call_input
@@ -1468,6 +1470,8 @@ def _unpaired_end_entry(record: dict[str, Any], index: int) -> dict[str, Any]:
     session = _record_session(record)
     if session:
         entry["session"] = session
+    if record.get("logical_session"):
+        entry["logical_session_id"] = str(record["logical_session"])
     if "duration_ms" in record:
         entry["duration_ms"] = record["duration_ms"]
     if "result" in record:
@@ -1566,6 +1570,7 @@ _AUDIT_SUMMARY_FIELDS = frozenset(
         "operation",
         "tool",
         "session",
+        "logical_session_id",
         "command",
         "purpose",
         "ok",
@@ -1625,6 +1630,7 @@ def _matching_audit_rows(
     event: str | None,
     operation: str | None,
     session: str | None,
+    logical_session_id: str | None,
     search: str | None,
     start_ts: float | None,
     end_ts: float | None,
@@ -1634,6 +1640,7 @@ def _matching_audit_rows(
     event_filter = (event or "").casefold().strip()
     operation_filter = (operation or "").casefold().strip()
     session_filter = (session or "").casefold().strip()
+    logical_filter = (logical_session_id or "").casefold().strip()
     matched: list[dict[str, Any]] = []
     for row in _coalesce_audit_records(records):
         ts = float(row.get("ts") or 0)
@@ -1652,6 +1659,8 @@ def _matching_audit_rows(
             continue
         if session_filter and session_filter != str(row.get("session") or "").casefold():
             continue
+        if logical_filter and logical_filter != str(row.get("logical_session_id") or "").casefold():
+            continue
         if needle and needle not in json.dumps(row, ensure_ascii=False, default=str).casefold():
             continue
         matched.append(row)
@@ -1665,6 +1674,7 @@ def query_audit(
     event: str | None = None,
     operation: str | None = None,
     session: str | None = None,
+    logical_session_id: str | None = None,
     search: str | None = None,
     start_ts: float | None = None,
     end_ts: float | None = None,
@@ -1682,6 +1692,7 @@ def query_audit(
         event=event,
         operation=operation,
         session=session,
+        logical_session_id=logical_session_id,
         search=search,
         start_ts=start_ts,
         end_ts=end_ts,

@@ -19,7 +19,7 @@ from pathspec.gitignore import GitIgnoreSpec
 from pydantic import BaseModel, ConfigDict, Field, create_model
 
 from . import __version__
-from .audit import audit, audit_call_context, audit_result_ok
+from .audit import audit, audit_call_context, audit_result_ok, query_audit
 from .auth import current_principal, principal_scopes, require_current_scopes
 from .browser_sessions import get_browser_session_manager
 from .deprecated_tools import DeprecatedToolFastMCP as FastMCP
@@ -30,6 +30,7 @@ from .errors import (
     ShellExecutableNotFoundError,
     workspace_path_not_found_error,
 )
+from .execution_scope import current_execution_session, execution_session
 from .fs_ops import (
     delete_path,
     edit_text,
@@ -853,6 +854,25 @@ def _install_mcp_tool_watchdogs(mcp: FastMCP) -> None:
                 str(logical_session_id).strip() if logical_session_id is not None else ""
             ) or None
 
+            principal = current_principal()
+            bound_session = principal.claims.get("bound_session") if principal else None
+            if bound_session:
+                requested_session = (
+                    str(call_arguments.get("session_id") or "")
+                    if __tool_name in explicit_session_tools
+                    else logical_session_id
+                )
+                if requested_session != bound_session:
+                    raise PermissionError("Tool call is outside the bound Logical Session")
+                if __tool_name == "session_manage" and str(
+                    call_arguments.get("action") or ""
+                ).strip().lower() not in {"get", "report"}:
+                    raise PermissionError("Run-bound Agent cannot change Session lifecycle")
+                if __tool_name == "plan_manage":
+                    raise PermissionError("Run-bound Agent cannot manage LSM Goal Plan")
+                if __tool_name in {"mcp_manage", "remote_manage", "restart"}:
+                    raise PermissionError("Run-bound Agent cannot manage global LSM services")
+
             local_access_error = _disabled_local_access_error(__tool_name, call_arguments)
             if any(call_arguments.get(name) for name in REMOTE_MACHINE_ARGUMENTS):
                 require_current_scopes(("remote:use",))
@@ -890,12 +910,31 @@ def _install_mcp_tool_watchdogs(mcp: FastMCP) -> None:
             } and not (__tool_name == "plan_manage" and normalized_tool_action == "get")
             if tracks_session_activity:
                 try:
+                    if __tool_name == "remote_transfer":
+                        requested_machines = [
+                            str(call_arguments.get("source_machine") or "local").strip(),
+                            str(call_arguments.get("destination_machine") or "local").strip(),
+                        ]
+                        execution_machines = ["local", *requested_machines]
+                    else:
+                        execution_machines = [str(call_arguments.get("machine") or "local").strip()]
+                    remote_nodes = {node for node in execution_machines if node != "local"}
+                    if remote_nodes and logical_session_id:
+                        registered = (
+                            {str(item.get("name")) for item in remote_manager().list_machines().get("machines", [])}
+                            if get_settings().remote_enabled else set()
+                        )
+                        if remote_nodes - registered:
+                            # The underlying tool returns its established structured
+                            # error. No execution node was actually resolved.
+                            execution_machines = []
                     logical_lease = await asyncio.to_thread(
                         logical_manager.begin_tool_call,
                         logical_session_id,
                         call_id,
                         subject=principal_subject,
                         data=live_arguments,
+                        execution_machines=execution_machines,
                     )
                 except SessionToolLeaseStartPersistenceError as exc:
                     _schedule_session_tool_cleanup_retry(
@@ -993,7 +1032,7 @@ def _install_mcp_tool_watchdogs(mcp: FastMCP) -> None:
                     )
                 raise
             try:
-                with audit_call_context(call_id) as call_state:
+                with audit_call_context(call_id) as call_state, execution_session(logical_session_id):
                     if local_access_error is not None:
                         result = _handled_error(RuntimeError(local_access_error))
                     elif __tool_name in NON_CANCELLABLE_TOOL_NAMES:
@@ -2465,6 +2504,9 @@ async def _remote_call(
     try:
         if not settings.remote_enabled:
             raise RuntimeError("Remote workers are disabled")
+        scoped_session = current_execution_session()
+        if scoped_session:
+            args = {**args, "_logical_session_id": scoped_session, "_execution_machine": machine}
         result = await remote_manager().call(machine, tool, args, timeout_s)
         data = result.get("data") if isinstance(result, dict) else None
         failed_status = (
@@ -3086,6 +3128,7 @@ def _register_maintenance_tools(mcp: FastMCP, read_only_tool: ToolAnnotations) -
     async def session_manage(
         action: str,
         session_id: str | None = None,
+        idempotency_key: str | None = None,
         label: str | None = None,
         objective: str | None = None,
         summary: str | None = None,
@@ -3101,6 +3144,7 @@ def _register_maintenance_tools(mcp: FastMCP, read_only_tool: ToolAnnotations) -
             subject,
             action=action,
             session_id=session_id,
+            idempotency_key=idempotency_key,
             label=label,
             objective=objective,
             summary=summary,
@@ -3217,6 +3261,11 @@ def _register_maintenance_tools(mcp: FastMCP, read_only_tool: ToolAnnotations) -
     @mcp.tool(structured_output=True, annotations=read_only_tool, meta=shell_read_meta)
     async def audit_tail(lines: int = 100) -> ToolResult:
         """Read recent local audit log entries."""
+        if current_execution_session():
+            return await _tool_call(
+                asyncio.to_thread, query_audit,
+                logical_session_id=current_execution_session(), limit=lines,
+            )
         return await _tool_call(asyncio.to_thread, _read_audit_tail_entries, lines)
 
 

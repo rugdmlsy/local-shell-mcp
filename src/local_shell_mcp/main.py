@@ -75,6 +75,7 @@ def _with_oauth_routes(inner_app, mcp=None):  # noqa: ANN001
     from starlette.responses import JSONResponse
     from starlette.routing import Mount, Route
 
+    from .control_plane import control_routes
     from .downloads import download_routes
     from .human_ui import ui_routes
     from .live_channel_routes import live_channel_routes
@@ -121,6 +122,7 @@ def _with_oauth_routes(inner_app, mcp=None):  # noqa: ANN001
     ]
     settings = get_settings()
     routes[2:2] = download_routes()
+    routes[2:2] = control_routes()
     if settings.ui_enabled and settings.live_workspace_enabled:
         routes[2:2] = live_channel_routes()
     if settings.ui_enabled:
@@ -158,7 +160,7 @@ def _build_mcp_http_app(mcp):  # noqa: ANN001
             McpSessionLimitMiddleware,
             session_manager=session_manager,
         )
-    if settings.auth_mode != "none":
+    if settings.auth_mode != "none" or getattr(settings, "require_session_capability", False):
         app.add_middleware(AuthMiddleware)
     app.add_middleware(RequestBodyLimitMiddleware)
     # Must be outermost so browser preflights from the MCP App sandbox do not

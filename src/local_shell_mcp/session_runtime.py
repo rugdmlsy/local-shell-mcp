@@ -149,6 +149,8 @@ class LogicalSession:
     status: str = "active"
     label: str | None = None
     objective: str | None = None
+    idempotency_key: str | None = None
+    machines_touched: set[str] = field(default_factory=set)
     progress: ProgressState = field(default_factory=ProgressState)
     plan: PlanState | None = None
     in_flight_calls: dict[str, dict[str, Any]] = field(default_factory=dict)
@@ -164,6 +166,8 @@ class LogicalSession:
             "session_id": self.session_id,
             "label": self.label,
             "objective": self.objective,
+            "machines_touched": sorted(self.machines_touched),
+            "in_flight_calls": in_flight_calls,
             "status": self.status,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
@@ -261,8 +265,8 @@ class SessionRuntimeManager:
         else:
             self._sessions[session_id] = refreshed
 
-    def _refresh_all_sessions_locked(self) -> None:
-        if not self._uses_shared_state_backend():
+    def _refresh_all_sessions_locked(self, *, force: bool = False) -> None:
+        if not force and not self._uses_shared_state_backend():
             return
         refreshed: dict[str, LogicalSession] = {}
         store = self._state_store()
@@ -418,6 +422,8 @@ class SessionRuntimeManager:
             status=str(payload.get("status") or "active"),
             label=cls._bounded_text(payload.get("label")),
             objective=cls._bounded_text(payload.get("objective")),
+            idempotency_key=cls._bounded_text(payload.get("idempotency_key")),
+            machines_touched={str(node) for node in payload.get("machines_touched", [])},
             progress=ProgressState(
                 summary=cls._bounded_text(progress_payload.get("summary")),
                 findings=cls._bounded_list(progress_payload.get("findings")) or [],
@@ -458,6 +464,8 @@ class SessionRuntimeManager:
             "status": session.status,
             "label": session.label,
             "objective": session.objective,
+            "idempotency_key": session.idempotency_key,
+            "machines_touched": sorted(session.machines_touched),
             "progress": asdict(session.progress),
             "plan": cls._plan_to_payload(session.plan),
             "in_flight_calls": session.in_flight_calls,
@@ -564,7 +572,7 @@ class SessionRuntimeManager:
 
         candidates = []
         for item in retained:
-            if item.status not in {"completed", "cancelled"}:
+            if item.status not in {"completed", "cancelled"} or item.idempotency_key:
                 continue
             if self._in_flight_count_locked(item.session_id):
                 continue
@@ -581,7 +589,7 @@ class SessionRuntimeManager:
                     current = self._sessions.get(session_id)
                     if current is None or current.subject != subject:
                         continue
-                    if current.status not in {"completed", "cancelled"}:
+                    if current.status not in {"completed", "cancelled"} or current.idempotency_key:
                         continue
                     if self._in_flight_count_locked(session_id):
                         continue
@@ -604,6 +612,7 @@ class SessionRuntimeManager:
         findings: list[str] | None = None,
         next: str | None = None,
         blockers: list[str] | None = None,
+        idempotency_key: str | None = None,
         actor: str = "agent",
         _state_lock_held: bool = False,
     ) -> dict[str, Any]:
@@ -617,7 +626,10 @@ class SessionRuntimeManager:
         with self._lock:
             self._ensure_loaded_locked()
             if normalized_action == "start":
-                if not _state_lock_held and self._uses_shared_state_backend():
+                # Serialize keyed creation across controllers and refresh while holding
+                # the shared history lock. The key lives in the Session record, so
+                # deletion of that record also releases the key atomically.
+                if not _state_lock_held:
                     with self._state_store().lock("sessions/history"):
                         return self.manage(
                             subject,
@@ -629,15 +641,25 @@ class SessionRuntimeManager:
                             findings=findings,
                             next=next,
                             blockers=blockers,
+                            idempotency_key=idempotency_key,
                             actor=actor,
                             _state_lock_held=True,
                         )
-                if self._uses_shared_state_backend():
-                    self._refresh_all_sessions_locked()
+                self._refresh_all_sessions_locked(force=True)
                 now = time.time()
                 normalized_subject = str(subject or "").strip()
                 if not normalized_subject:
                     raise ValueError("subject is required for action=start")
+                if idempotency_key is not None and len(str(idempotency_key).strip()) > SESSION_TEXT_LIMIT:
+                    raise ValueError("idempotency_key is too long")
+                normalized_key = self._bounded_text(idempotency_key)
+                if idempotency_key is not None and not normalized_key:
+                    raise ValueError("idempotency_key cannot be empty")
+                if normalized_key:
+                    for existing in self._sessions.values():
+                        if (existing.subject == normalized_subject
+                            and existing.idempotency_key == normalized_key):
+                            return self._public_state_locked(existing)
                 logical = LogicalSession(
                     session_id=self._new_session_id(),
                     subject=normalized_subject,
@@ -645,6 +667,7 @@ class SessionRuntimeManager:
                     updated_at=now,
                     label=self._bounded_text(label),
                     objective=self._bounded_text(objective),
+                    idempotency_key=normalized_key,
                 )
                 self._sessions[logical.session_id] = logical
                 try:
@@ -665,6 +688,17 @@ class SessionRuntimeManager:
             if not session_id:
                 raise ValueError(f"session_id is required for action={normalized_action}")
 
+            if normalized_action == "delete" and not _state_lock_held:
+                with self._state_store().lock("sessions/history"):
+                    self._refresh_all_sessions_locked(force=True)
+                    return self.manage(
+                        subject,
+                        action=action,
+                        session_id=session_id,
+                        actor=actor,
+                        _state_lock_held=True,
+                    )
+
             if (
                 not _state_lock_held
                 and normalized_action not in {"get"}
@@ -681,6 +715,7 @@ class SessionRuntimeManager:
                         findings=findings,
                         next=next,
                         blockers=blockers,
+                        idempotency_key=idempotency_key,
                         actor=actor,
                         _state_lock_held=True,
                     )
@@ -857,6 +892,7 @@ class SessionRuntimeManager:
         *,
         subject: str | None = None,
         data: dict[str, Any] | None = None,
+        execution_machines: list[str] | None = None,
         _state_lock_held: bool = False,
     ) -> dict[str, Any] | None:
         """Persist a tool call under an explicitly supplied Logical Session."""
@@ -871,6 +907,7 @@ class SessionRuntimeManager:
                         call_id,
                         subject=subject,
                         data=data,
+                        execution_machines=execution_machines,
                         _state_lock_held=True,
                     )
             logical = self._require_session_locked(session_id, subject)
@@ -880,6 +917,11 @@ class SessionRuntimeManager:
                 )
             before_start = copy.deepcopy(logical)
             now = time.time()
+            # This is an execution-node index, not a timeline. Record the
+            # resolved nodes before dispatch so even failed calls are locatable.
+            logical.machines_touched.update(
+                ["local"] if execution_machines is None else execution_machines
+            )
             logical.in_flight_calls[call_id] = {
                 "started_at": now,
                 "heartbeat_at": now,

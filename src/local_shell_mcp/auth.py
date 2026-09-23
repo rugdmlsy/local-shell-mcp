@@ -48,6 +48,7 @@ def _is_public_path(path: str) -> bool:
     ui_path = "/" + get_settings().ui_path.strip("/")
     return (
         path == "/"
+        or path.startswith("/api/control/")
         or path in PUBLIC_PATHS
         or path.startswith(_REMOTE_TRANSFER_PREFIX)
         or path.startswith("/.well-known/")
@@ -257,6 +258,18 @@ def _verify_oauth(request: Request, settings: Settings) -> Principal:
 def verify_request(request: Request) -> Principal:
     settings = get_settings()
     path = str(request.url.path)
+    if path == "/mcp" and settings.require_session_capability:
+        from .capabilities import resolve_capability
+
+        binding = resolve_capability(request.headers.get("x-lsm-session-capability"))
+        if binding is None:
+            raise HTTPException(status_code=401, detail="Valid Session capability required")
+        return Principal(
+            email=None,
+            subject=str(binding["subject"]),
+            claims={"auth": "none", "bound_session": binding["session_id"],
+                    "capability_id": binding["capability_id"]},
+        )
     if (
         path.startswith(HUMAN_UI_API_PREFIX)
         and is_loopback_connection(request)
@@ -464,6 +477,7 @@ class AuthMiddleware:
         if (
             settings.auth_mode == "oauth"
             and not settings.require_auth_for_mcp_discovery
+            and not settings.require_session_capability
             and _is_mcp_discovery_request(scope, body)
         ):
             await self.app(scope, downstream_receive, send)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import re
 import shlex
@@ -19,6 +20,7 @@ from pathlib import Path
 from . import conpty_ops
 from .audit import audit
 from .errors import process_start_not_found_error
+from .execution_scope import current_execution_machine, current_execution_session, execution_session
 from .fs_ops import relative_display, resolve_path
 from .models import CommandResult
 from .process_utils import managed_process_kwargs
@@ -32,6 +34,7 @@ from .shell_environment import (
 from .shell_environment import (
     shell_program_name as _shell_program_name,
 )
+from .state_store import get_state_store
 from .tmux_helper import resolve_tmux, tmux_socket_name
 
 PUBLIC_RUN_SHELL_DEFAULT_TIMEOUT_S = 10
@@ -837,7 +840,8 @@ async def _start_shell_unlocked(
         return await _native_start_shell(cwd, name, command)
 
     resolved_cwd = resolve_path(cwd, must_exist=True)
-    sessions = await list_shells()
+    with execution_session(None):
+        sessions = await list_shells()
     max_sessions = max(1, get_settings().max_tmux_sessions)
     if len(sessions.get("sessions", [])) >= max_sessions:
         raise RuntimeError(f"Refusing to start more than {max_sessions} persistent shell sessions")
@@ -884,7 +888,38 @@ async def _start_shell_unlocked(
 
 async def start_shell(cwd: str = ".", name: str | None = None, command: str | None = None) -> dict:
     async with _shell_start_lock():
-        return await _start_shell_unlocked(cwd, name, command)
+        shell = await _start_shell_unlocked(cwd, name, command)
+        session_id = str(shell["session_id"])
+        owner = current_execution_session()
+        record = {
+            "shell_session_id": session_id,
+            "logical_session_id": owner,
+            "machine": current_execution_machine(),
+            "backend": shell.get("backend"),
+        }
+        try:
+            get_state_store().write_bytes(
+                f"shell-owners/{session_id}.json",
+                json.dumps(record, separators=(",", ":")).encode("utf-8"),
+            )
+        except Exception:
+            with execution_session(None):
+                await kill_shell(session_id)
+            raise
+        return {**shell, "logical_session_id": owner, "machine": current_execution_machine()}
+
+
+def shell_owner(session_id: str) -> dict | None:
+    raw = get_state_store().read_bytes(f"shell-owners/{session_id}.json")
+    return json.loads(raw) if raw is not None else None
+
+
+def _require_shell_owner(session_id: str) -> None:
+    bound = current_execution_session()
+    if bound is not None:
+        owner = shell_owner(session_id)
+        if owner is None or owner.get("logical_session_id") != bound:
+            raise PermissionError("Shell belongs to a different Logical Session")
 
 
 def _validate_persistent_shell_size(cols: int, rows: int) -> tuple[int, int]:
@@ -915,6 +950,7 @@ async def _native_resize_shell(session_id: str, cols: int, rows: int) -> dict:
 
 
 async def resize_shell(session_id: str, cols: int, rows: int) -> dict:
+    _require_shell_owner(session_id)
     columns, lines = _validate_persistent_shell_size(cols, rows)
     if _use_windows_persistent_shell_backend():
         if conpty_ops.has_session(session_id):
@@ -946,6 +982,7 @@ async def resize_shell(session_id: str, cols: int, rows: int) -> dict:
 
 
 async def send_shell(session_id: str, input_text: str, enter: bool = True) -> dict:
+    _require_shell_owner(session_id)
     if _use_windows_persistent_shell_backend():
         if conpty_ops.has_session(session_id):
             return await conpty_ops.send_shell(session_id, input_text, enter)
@@ -971,6 +1008,7 @@ async def send_shell(session_id: str, input_text: str, enter: bool = True) -> di
 
 
 async def read_shell(session_id: str, lines: int = 200) -> dict:
+    _require_shell_owner(session_id)
     if _use_windows_persistent_shell_backend():
         if conpty_ops.has_session(session_id):
             return await conpty_ops.read_shell(session_id, lines)
@@ -986,6 +1024,7 @@ async def read_shell(session_id: str, lines: int = 200) -> dict:
 
 
 async def kill_shell(session_id: str) -> dict:
+    _require_shell_owner(session_id)
     if _use_windows_persistent_shell_backend():
         if conpty_ops.has_session(session_id):
             return await conpty_ops.kill_shell(session_id)
@@ -1035,4 +1074,11 @@ async def list_shells() -> dict:
         sessions[0:0] = conpty_sessions.get("sessions", [])
     else:
         sessions[0:0] = await _tmux_list_shells()
+    bound = current_execution_session()
+    if bound is not None:
+        for shell in sessions:
+            owner = shell_owner(str(shell.get("session_id") or ""))
+            shell["logical_session_id"] = owner.get("logical_session_id") if owner else None
+            shell["machine"] = owner.get("machine", current_execution_machine()) if owner else current_execution_machine()
+        sessions = [shell for shell in sessions if shell["logical_session_id"] == bound]
     return {"sessions": sessions}

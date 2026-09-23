@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any, BinaryIO
 
 from .audit import audit
+from .execution_scope import current_execution_machine, current_execution_session, execution_session
 from .fs_ops import resolve_path
 from .process_utils import managed_process_kwargs
 from .settings import get_settings
@@ -642,6 +643,8 @@ def _adopt_pending_retry(job: dict[str, Any]) -> None:
         value = job.get(pending_key)
         if value:
             job[active_key] = value
+    # Keep the explicit shell owner field aligned when a retry adopts its new shell.
+    job["shell_session_id"] = job.get("session_id")
 
 
 def _begin_job_operation(job: dict[str, Any], kind: str) -> str:
@@ -814,6 +817,9 @@ def _public_job(job: dict[str, Any]) -> dict[str, Any]:
         "command": job.get("command"),
         "cwd": job.get("cwd"),
         "session_id": job.get("session_id"),
+        "shell_session_id": job.get("shell_session_id", job.get("session_id")),
+        "logical_session_id": job.get("logical_session_id"),
+        "machine": job.get("machine", "local"),
         "backend": job.get("backend"),
         "created_at": job.get("created_at"),
         "updated_at": job.get("updated_at"),
@@ -835,6 +841,9 @@ def _public_job(job: dict[str, Any]) -> dict[str, Any]:
 def _find_job(store: dict[str, Any], job_id: str) -> dict[str, Any]:
     for job in store.get("jobs", []):
         if job.get("job_id") == job_id:
+            bound = current_execution_session()
+            if bound is not None and job.get("logical_session_id") != bound:
+                raise PermissionError("Job belongs to a different Logical Session")
             return job
     raise KeyError(f"job not found: {job_id}")
 
@@ -1078,6 +1087,9 @@ async def start_managed_job(
         "command": command or normalized,
         "cwd": ".",
         "session_id": None,
+        "shell_session_id": None,
+        "logical_session_id": current_execution_session(),
+        "machine": current_execution_machine(),
         "backend": "managed",
         "command_path": None,
         "log_path": log_path,
@@ -1125,6 +1137,9 @@ async def start_job(
         "command": command,
         "cwd": cwd,
         "session_id": shell_name,
+        "shell_session_id": shell_name,
+        "logical_session_id": current_execution_session(),
+        "machine": current_execution_machine(),
         "backend": None,
         "command_path": str(paths["command"]),
         "log_path": str(paths["log"]),
@@ -1183,6 +1198,7 @@ async def start_job(
                         {
                             "status": "running",
                             "session_id": shell["session_id"],
+                            "shell_session_id": shell["session_id"],
                             "backend": shell.get("backend"),
                             "updated_at": started_at,
                             "last_started_at": started_at,
@@ -1211,11 +1227,14 @@ async def list_jobs(
     limit: int = JOB_LIST_DEFAULT_LIMIT,
 ) -> dict[str, Any]:
     limit = max(1, min(int(limit), JOB_LIST_MAX_LIMIT))
-    active = (
-        set()
-        if get_settings().disable_local
-        else _active_session_ids(await list_shells())
-    )
+    # Status refresh must see every local shell. Filtering happens only after
+    # refresh, so one scoped Agent cannot mark another Run's jobs as lost.
+    with execution_session(None):
+        active = (
+            set()
+            if get_settings().disable_local
+            else _active_session_ids(await list_shells())
+        )
     now = _utc()
     with _store_transaction() as store:
         jobs = [_refresh_job_status(job, active, now) for job in store.get("jobs", [])]
@@ -1227,6 +1246,9 @@ async def list_jobs(
             if get_settings().disable_local
             else jobs
         )
+        bound = current_execution_session()
+        if bound is not None:
+            visible_jobs = [job for job in visible_jobs if job.get("logical_session_id") == bound]
         candidates = [
             job
             for job in visible_jobs
@@ -1649,6 +1671,7 @@ async def retry_job(
                         {
                             "status": "running",
                             "session_id": shell["session_id"],
+                            "shell_session_id": shell["session_id"],
                             "backend": shell.get("backend"),
                             "command_path": str(paths["command"]),
                             "log_path": str(paths["log"]),

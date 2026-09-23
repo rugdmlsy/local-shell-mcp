@@ -184,6 +184,8 @@ async def test_jobs_track_tail_stop_and_retry(tmp_path, monkeypatch):
     job = await start_job("python -m http.server", cwd=".", name="server")
     assert job["status"] == "running"
     assert job["attempts"] == 1
+    assert job["shell_session_id"] == job["session_id"]
+    assert jobs_module._load_store()["jobs"][0]["shell_session_id"] == job["session_id"]
 
     listed = await list_jobs()
     assert listed["counts"] == {"running": 1}
@@ -202,6 +204,7 @@ async def test_jobs_track_tail_stop_and_retry(tmp_path, monkeypatch):
     assert retried["status"] == "running"
     assert retried["attempts"] == 2
     assert retried["session_id"] != job["session_id"]
+    assert jobs_module._load_store()["jobs"][0]["shell_session_id"] == retried["session_id"]
 
 
 

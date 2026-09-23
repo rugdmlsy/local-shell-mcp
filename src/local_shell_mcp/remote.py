@@ -2092,10 +2092,15 @@ def _worker_download_url(
 async def execute_worker_tool(tool: str, args: dict[str, Any]) -> Any:
     call_args = dict(args)
     human = bool(call_args.pop("_human", False))
-    if human:
-        with suppress_audit():
-            return await _execute_worker_tool_inner(tool, call_args)
-    return await _execute_worker_tool_inner(tool, call_args)
+    logical_session_id = call_args.pop("_logical_session_id", None)
+    execution_node = str(call_args.pop("_execution_machine", "local"))
+    from .execution_scope import execution_machine, execution_session
+
+    with execution_session(logical_session_id), execution_machine(execution_node):
+        if human:
+            with suppress_audit():
+                return await _execute_worker_tool_inner(tool, call_args)
+        return await _execute_worker_tool_inner(tool, call_args)
 
 
 async def _execute_environment_worker_tool(tool: str, args: dict[str, Any]) -> Any:
