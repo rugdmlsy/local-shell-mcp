@@ -103,6 +103,12 @@ remote() {
   ssh "${ssh_options[@]}" "${ssh_host}" "$@"
 }
 
+stage_remote_file() {
+  local source_path="$1"
+  local target_path="$2"
+  ssh "${ssh_options[@]}" "${ssh_host}" "cat > '${target_path}'" < "${source_path}"
+}
+
 establish_ssh_master() {
   local attempt
   local status=255
@@ -297,6 +303,19 @@ PY
 echo "candidate verified: ${release_dir}"
 REMOTE
 
+topology_stage_dir="/tmp/lsm-topology-${commit_sha:0:12}"
+remote rm -rf "${topology_stage_dir}"
+remote mkdir -m 0700 "${topology_stage_dir}"
+stage_remote_file "${script_dir}/run-host-vps.sh" "${topology_stage_dir}/run-host-vps.sh"
+stage_remote_file "${script_dir}/local-shell-mcp.service" "${topology_stage_dir}/local-shell-mcp.service"
+stage_remote_file "${script_dir}/mcp-router.caddy" "${topology_stage_dir}/mcp-router.caddy"
+remote bash -s -- \
+  "${topology_stage_dir}/run-host-vps.sh" \
+  "${topology_stage_dir}/local-shell-mcp.service" \
+  "${topology_stage_dir}/mcp-router.caddy" \
+  < "${script_dir}/install-production-topology.sh"
+remote rmdir "${topology_stage_dir}"
+
 current_release="$(remote bash -s -- "${deploy_root}" <<'REMOTE'
 set -euo pipefail
 deploy_root="$1"
@@ -357,6 +376,31 @@ wait_for_release_process() {
 
   echo "service did not start from ${target_release_name}" >&2
   return 1
+}
+
+activate_production_topology() {
+  local status
+  for attempt in 1 2 3; do
+    if post_switch_run_script \
+      "${script_dir}/activate-production-topology.sh" "${service_name}"; then
+      status=0
+    else
+      status=$?
+    fi
+    if test "${status}" -eq 0; then
+      return 0
+    fi
+    if test "${status}" -ne 75; then
+      echo "production topology activation failed with remote status ${status}" >&2
+      return "${status}"
+    fi
+    echo "all post-switch SSH paths failed; topology activation retry ${attempt}/3" >&2
+    test "${attempt}" -lt 3 && sleep 5
+  done
+
+  post_switch_transport_uncertain=true
+  echo "production topology activation is indeterminate because SSH transport remained unavailable" >&2
+  return 75
 }
 
 verify_release_post_switch() {
@@ -431,6 +475,7 @@ else
 fi
 wait_for_release_process "${release_name}" "${old_pid}"
 
+activate_production_topology
 verify_release_post_switch
 
 # A passing loopback MCP call proves the new controller is healthy. Do not turn

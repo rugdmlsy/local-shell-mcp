@@ -10,6 +10,9 @@ DEPLOY_COMMAND = REPOSITORY / "deploy/morrow/deploy-vps.sh"
 MCP_PROBE = REPOSITORY / "scripts/probe-mcp.py"
 HOST_CONFIG = REPOSITORY / "deploy/morrow/host.yaml.example"
 HOST_LAUNCHER = REPOSITORY / "deploy/morrow/run-host-vps.sh"
+ROUTER_CONFIG = REPOSITORY / "deploy/morrow/mcp-router.caddy"
+INSTALL_TOPOLOGY = REPOSITORY / "deploy/morrow/install-production-topology.sh"
+ACTIVATE_TOPOLOGY = REPOSITORY / "deploy/morrow/activate-production-topology.sh"
 VERIFY_RELEASE = REPOSITORY / "deploy/morrow/verify-release.sh"
 CHECK_RELEASE_PROCESS = REPOSITORY / "deploy/morrow/check-release-process.sh"
 CURRENT_RELEASE = REPOSITORY / "deploy/morrow/current-release.sh"
@@ -51,6 +54,11 @@ def test_deploy_command_keeps_release_and_rollback_guards() -> None:
         "remote_fresh_guarded",
         "run-command-with-timeout.py",
         "verify-release.sh",
+        "mcp-router.caddy",
+        "install-production-topology.sh",
+        "activate-production-topology.sh",
+        "stage_remote_file",
+        "activate_production_topology",
         "post_switch_transport_uncertain",
         "ssh-guard.sh",
         "post_switch_run_script",
@@ -77,7 +85,14 @@ def test_post_switch_verifier_and_timeout_helper_are_deterministic() -> None:
     assert "--pin-env LOCAL_SHELL_MCP_OAUTH_ADMIN_PIN" in verifier
     assert "/proc/${pid}/cmdline" in process_check
     assert 'test "$1" -eq 124 || test "$1" -eq 255' in guard
-    for script in (VERIFY_RELEASE, CHECK_RELEASE_PROCESS, CURRENT_RELEASE, SSH_GUARD):
+    for script in (
+        VERIFY_RELEASE,
+        CHECK_RELEASE_PROCESS,
+        CURRENT_RELEASE,
+        SSH_GUARD,
+        INSTALL_TOPOLOGY,
+        ACTIVATE_TOPOLOGY,
+    ):
         subprocess.run(["bash", "-n", str(script)], check=True)
 
     success = subprocess.run(
@@ -165,6 +180,31 @@ printf 'status=%s\n' "${status}"
     assert indeterminate.returncode == 0
     assert "status=75" in indeterminate.stdout
     assert marker.exists()
+
+
+def test_production_topology_owns_shared_caddy_edge() -> None:
+    config = HOST_CONFIG.read_text(encoding="utf-8")
+    launcher = HOST_LAUNCHER.read_text(encoding="utf-8")
+    router = ROUTER_CONFIG.read_text(encoding="utf-8")
+    verifier = VERIFY_RELEASE.read_text(encoding="utf-8")
+    installer = INSTALL_TOPOLOGY.read_text(encoding="utf-8")
+
+    assert "port: 8766" in config
+    assert "LOCAL_SHELL_MCP_HOST=127.0.0.1" in launcher
+    assert "LOCAL_SHELL_MCP_PORT=8766" in launcher
+    assert router.lstrip().startswith("# Shared loopback edge")
+    assert "\n:8765 {" in router
+    assert "bind 127.0.0.1" in router
+    assert "reverse_proxy 127.0.0.1:8766" in router
+    assert "reverse_proxy 127.0.0.1:8787" in router
+    assert "@morrows_mcp path /morrows /morrows/" in router
+    assert "http://127.0.0.1:8766/healthz" in verifier
+    assert "http://127.0.0.1:8765/healthz" in verifier
+    assert "install -m 0755" in installer
+    assert "local-shell-mcp.service" in installer
+    assert "morrows-router.caddy" in installer
+    assert "caddy validate" in installer
+    assert "systemctl daemon-reload" in installer
 
 
 def test_production_owns_official_live_workspace_and_goal_continuation() -> None:

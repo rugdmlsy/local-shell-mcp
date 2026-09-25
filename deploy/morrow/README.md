@@ -2,7 +2,21 @@
 
 This directory defines the production shape for `mcp.xycdev.com`. GitHub is the
 authoritative source, the Mac is the development checkout, and the VPS runs an
-immutable tagged release:
+immutable tagged release. The production network shape is also owned here:
+
+```text
+Cloudflare Tunnel
+       |
+       v
+Caddy 127.0.0.1:8765
+  |-- /morrows* -> Morrows 127.0.0.1:8787
+  '-- everything else -> Local Shell MCP 127.0.0.1:8766
+```
+
+Cloudflared continues to target `127.0.0.1:8765`. Caddy is the only process
+that owns that edge port. Local Shell MCP must never bind 8765 in production.
+The canonical router is `mcp-router.caddy`; the deployment command installs it,
+the production launcher, and the systemd unit before every release restart.
 
 ```text
 /home/morrow/lsm-controller/
@@ -28,9 +42,11 @@ the `4.3.2+morrow.N` version, then run:
 
 The command derives `morrow-v4.3.2-N` from `pyproject.toml`, creates and pushes
 that tag when needed, builds the immutable VPS release, verifies its manifest
-and icon, switches `current`, and performs local plus public health checks. Its
-localhost MCP probe performs a real `environment_get` call, proving that local
-execution remains enabled. The probe reads the OAuth admin PIN from the private
+and icon, stages the canonical launcher/systemd/Caddy topology, switches
+`current`, activates the shared edge, and performs direct-controller,
+edge-routed, and public health checks. Its localhost MCP probe talks directly
+to LSM on port 8766 and performs a real `environment_get` call, proving that
+local execution remains enabled. The probe reads the OAuth admin PIN from the private
 service environment, exchanges it for an ephemeral token, and never places the
 PIN or token in the command line or logs. A post-switch check that reaches the VPS and proves the release unhealthy
 automatically invokes `rollback-release.sh`. A pure SSH transport failure is not
@@ -41,7 +57,13 @@ independent-connection fallback. If repeated rounds cannot establish either SSH
 path, deployment exits as indeterminate and preserves `current` instead of
 blindly rolling back through a control path that is itself unhealthy.
 Re-running the same release restarts it without replacing the `previous` rollback
-link. Service restarts are queued with non-interactive `sudo`; the command waits
+link. Do not hand-edit the production LSM port, Caddy import, launcher, or unit
+as a normal deployment procedure. Change the files in this directory first and
+deploy through `deploy-vps.sh`. In particular, never stop or rewire the LSM
+control path from an agent that depends on that same path unless an independent
+OOB recovery path is already proven.
+
+Service restarts are queued with non-interactive `sudo`; the command waits
 for a changed systemd PID whose interpreter belongs to the target release before
 it accepts the deployment. Before cutover it still reuses one SSH ControlMaster
 connection so VPS connection throttling cannot strand a verified candidate.

@@ -13,7 +13,7 @@ version="$4"
 service_env="$5"
 
 for attempt in $(seq 1 30); do
-  if curl -fsS --max-time 2 http://127.0.0.1:8765/healthz >/dev/null; then
+  if curl -fsS --max-time 2 http://127.0.0.1:8766/healthz >/dev/null; then
     break
   fi
   test "${attempt}" -lt 30
@@ -27,6 +27,11 @@ set -a
 set +a
 "${deploy_root}/current/.venv/bin/python" \
   "${deploy_root}/current/scripts/probe-mcp.py" \
-  http://127.0.0.1:8765 \
+  http://127.0.0.1:8766 \
   --pin-env LOCAL_SHELL_MCP_OAUTH_ADMIN_PIN
+
+curl -fsS --max-time 2 \
+  -H 'Host: mcp.xycdev.com' \
+  http://127.0.0.1:8765/healthz >/dev/null
+
 systemctl show "${service_name}" -p ActiveState -p SubState -p MainPID -p NRestarts --no-pager
