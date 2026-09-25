@@ -252,6 +252,11 @@ grep -q '^LOCAL_SHELL_MCP_OAUTH_ADMIN_PIN=' "${service_env}" || {
   echo "OAuth admin PIN is missing from the service environment" >&2
   exit 1
 }
+if grep -Eq '^LOCAL_SHELL_MCP_CONTROL_API_KEY=.+$' "${service_env}"; then
+  echo "LSM control credential: configured"
+else
+  echo "LSM control credential: missing; real deployment will generate it"
+fi
 sudo -n true
 systemctl is-active --quiet "${service_name}"
 systemctl is-active --quiet local-shell-mcp-cloudflared.service
@@ -267,9 +272,11 @@ echo "version: ${version}"
 echo "commit: ${commit_sha}"
 echo "icon: ${icon_bytes} bytes ${icon_sha256}"
 if ${dry_run}; then
-  echo "DRY RUN: preflight passed; no tag, release, symlink, or service was changed"
+  echo "DRY RUN: preflight passed; no tag, release, symlink, service, or secret was changed"
   exit 0
 fi
+
+remote bash -s -- "${service_env}" < "${script_dir}/ensure-production-secrets.sh"
 
 remote bash -s -- \
   "${release_tag}" "${commit_sha}" "${repository_url}" "${deploy_root}" "${uv_bin}" \

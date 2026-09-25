@@ -13,6 +13,7 @@ HOST_LAUNCHER = REPOSITORY / "deploy/morrow/run-host-vps.sh"
 ROUTER_CONFIG = REPOSITORY / "deploy/morrow/mcp-router.caddy"
 INSTALL_TOPOLOGY = REPOSITORY / "deploy/morrow/install-production-topology.sh"
 ACTIVATE_TOPOLOGY = REPOSITORY / "deploy/morrow/activate-production-topology.sh"
+ENSURE_PRODUCTION_SECRETS = REPOSITORY / "deploy/morrow/ensure-production-secrets.sh"
 VERIFY_RELEASE = REPOSITORY / "deploy/morrow/verify-release.sh"
 CHECK_RELEASE_PROCESS = REPOSITORY / "deploy/morrow/check-release-process.sh"
 CURRENT_RELEASE = REPOSITORY / "deploy/morrow/current-release.sh"
@@ -57,6 +58,7 @@ def test_deploy_command_keeps_release_and_rollback_guards() -> None:
         "mcp-router.caddy",
         "install-production-topology.sh",
         "activate-production-topology.sh",
+        "ensure-production-secrets.sh",
         "stage_remote_file",
         "activate_production_topology",
         "post_switch_transport_uncertain",
@@ -92,6 +94,7 @@ def test_post_switch_verifier_and_timeout_helper_are_deterministic() -> None:
         SSH_GUARD,
         INSTALL_TOPOLOGY,
         ACTIVATE_TOPOLOGY,
+        ENSURE_PRODUCTION_SECRETS,
     ):
         subprocess.run(["bash", "-n", str(script)], check=True)
 
@@ -180,6 +183,47 @@ printf 'status=%s\n' "${status}"
     assert indeterminate.returncode == 0
     assert "status=75" in indeterminate.stdout
     assert marker.exists()
+
+
+def test_production_control_credential_is_generated_privately_and_idempotently(
+    tmp_path: Path,
+) -> None:
+    service_env = tmp_path / "service.env"
+    service_env.write_text(
+        "CLOUDFLARE_TUNNEL_TOKEN=keep-existing\n"
+        "LOCAL_SHELL_MCP_OAUTH_ADMIN_PIN=keep-pin\n",
+        encoding="utf-8",
+    )
+    service_env.chmod(0o600)
+
+    first = subprocess.run(
+        [str(ENSURE_PRODUCTION_SECRETS), str(service_env)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    content = service_env.read_text(encoding="utf-8")
+    control_lines = [
+        line
+        for line in content.splitlines()
+        if line.startswith("LOCAL_SHELL_MCP_CONTROL_API_KEY=")
+    ]
+    assert len(control_lines) == 1
+    generated_value = control_lines[0].split("=", 1)[1]
+    assert len(generated_value) >= 48
+    assert generated_value not in first.stdout
+    assert "CLOUDFLARE_TUNNEL_TOKEN=keep-existing" in content
+    assert "LOCAL_SHELL_MCP_OAUTH_ADMIN_PIN=keep-pin" in content
+    assert service_env.stat().st_mode & 0o777 == 0o600
+
+    second = subprocess.run(
+        [str(ENSURE_PRODUCTION_SECRETS), str(service_env)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert service_env.read_text(encoding="utf-8") == content
+    assert generated_value not in second.stdout
 
 
 def test_production_topology_owns_shared_caddy_edge() -> None:

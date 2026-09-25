@@ -34,4 +34,9 @@ curl -fsS --max-time 2 \
   -H 'Host: mcp.xycdev.com' \
   http://127.0.0.1:8765/healthz >/dev/null
 
+pid="$(systemctl show "${service_name}" -p MainPID --value)"
+test -n "${pid}"
+test "${pid}" != 0
+tr '\0' '\n' < "/proc/${pid}/environ" | grep -q '^LOCAL_SHELL_MCP_CONTROL_API_KEY=.'
+
 systemctl show "${service_name}" -p ActiveState -p SubState -p MainPID -p NRestarts --no-pager
