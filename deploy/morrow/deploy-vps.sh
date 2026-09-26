@@ -3,10 +3,11 @@ set -euo pipefail
 
 usage() {
   cat <<'EOF'
-usage: deploy/morrow/deploy-vps.sh [--dry-run]
+usage: deploy/morrow/deploy-vps.sh [--dry-run] [--rotate-control-key]
 
 Build and atomically deploy the current pushed Morrow release to the production VPS.
 The release tag is derived from the X.Y.Z+morrow.N version in pyproject.toml.
+--rotate-control-key replaces the LSM control API credential before the managed restart.
 EOF
 }
 
@@ -22,22 +23,22 @@ readonly uv_bin="${LSM_DEPLOY_UV_BIN:-${deploy_root}/tools/uv-0.11.25/bin/uv}"
 readonly service_env="${LSM_DEPLOY_SERVICE_ENV:-/home/morrow/.config/local-shell-mcp/service.env}"
 
 dry_run=false
-case "${1:-}" in
-  "") ;;
-  --dry-run) dry_run=true ;;
-  -h|--help)
-    usage
-    exit 0
-    ;;
-  *)
-    usage >&2
-    exit 64
-    ;;
-esac
-test "$#" -le 1 || {
-  usage >&2
-  exit 64
-}
+rotate_control_key=false
+while test "$#" -gt 0; do
+  case "$1" in
+    --dry-run) dry_run=true ;;
+    --rotate-control-key) rotate_control_key=true ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      usage >&2
+      exit 64
+      ;;
+  esac
+  shift
+done
 
 [[ "${ssh_host}" =~ ^[0-9A-Za-z._@-]+$ ]] || {
   echo "invalid SSH host: ${ssh_host}" >&2
@@ -235,13 +236,14 @@ fi
 
 remote bash -s -- \
   "${expected_hostname}" "${deploy_root}" "${service_name}" "${uv_bin}" \
-  "${service_env}" <<'REMOTE'
+  "${service_env}" "${rotate_control_key}" <<'REMOTE'
 set -euo pipefail
 expected_hostname="$1"
 deploy_root="$2"
 service_name="$3"
 uv_bin="$4"
 service_env="$5"
+rotate_control_key="$6"
 test "$(hostname)" = "${expected_hostname}"
 test "$(id -un)" = morrow
 command -v git >/dev/null || { echo "git is missing on the VPS" >&2; exit 1; }
@@ -252,7 +254,9 @@ grep -q '^LOCAL_SHELL_MCP_OAUTH_ADMIN_PIN=' "${service_env}" || {
   echo "OAuth admin PIN is missing from the service environment" >&2
   exit 1
 }
-if grep -Eq '^LOCAL_SHELL_MCP_CONTROL_API_KEY=.+$' "${service_env}"; then
+if ${rotate_control_key}; then
+  echo "LSM control credential: rotation requested"
+elif grep -Eq '^LOCAL_SHELL_MCP_CONTROL_API_KEY=.+$' "${service_env}"; then
   echo "LSM control credential: configured"
 else
   echo "LSM control credential: missing; real deployment will generate it"
@@ -276,7 +280,11 @@ if ${dry_run}; then
   exit 0
 fi
 
-remote bash -s -- "${service_env}" < "${script_dir}/ensure-production-secrets.sh"
+if ${rotate_control_key}; then
+  remote bash -s -- --rotate-control-key "${service_env}" < "${script_dir}/ensure-production-secrets.sh"
+else
+  remote bash -s -- "${service_env}" < "${script_dir}/ensure-production-secrets.sh"
+fi
 
 remote bash -s -- \
   "${release_tag}" "${commit_sha}" "${repository_url}" "${deploy_root}" "${uv_bin}" \

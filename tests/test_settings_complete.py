@@ -78,6 +78,7 @@ port: 9001
         "LOCAL_SHELL_MCP_UI_WALLPAPER",
         "LOCAL_SHELL_MCP_REMOTE_ENABLED",
         "LOCAL_SHELL_MCP_PORT",
+        "LOCAL_SHELL_MCP_CONTROL_API_KEY",
     ):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("LOCAL_SHELL_MCP_CONFIG", str(config))
@@ -85,6 +86,7 @@ port: 9001
     monkeypatch.setenv("LOCAL_SHELL_MCP_STATE_DIR", str(tmp_path / "state"))
     monkeypatch.setenv("LOCAL_SHELL_MCP_OAUTH_JWT_SECRET", "x" * 40)
     monkeypatch.setenv("LOCAL_SHELL_MCP_OAUTH_ADMIN_PIN", "secret-pin-value")
+    monkeypatch.setenv("LOCAL_SHELL_MCP_CONTROL_API_KEY", "secret-control-key-value")
     settings.get_settings.cache_clear()
     loaded = settings.get_settings()
     assert loaded.mode == "http"
@@ -98,6 +100,7 @@ port: 9001
     dumped = settings.safe_settings_dump(loaded)
     assert dumped["oauth_jwt_secret"] == "<redacted>"
     assert dumped["oauth_admin_pin"] == "<redacted>"
+    assert dumped["control_api_key"] == "<redacted>"
     loaded.oauth_admin_pin = None
     assert settings.safe_settings_dump(loaded)["oauth_admin_pin"] is None
 

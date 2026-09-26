@@ -281,6 +281,7 @@ SENSITIVE_SETTING_KEYS = {
     "cf_access_audience",
     "cf_access_allowed_emails",
     "cf_access_allowed_email_domains",
+    "control_api_key",
     "oauth_admin_pin",
     "oauth_jwt_secret",
     "remote_mobile_apns_team_id",

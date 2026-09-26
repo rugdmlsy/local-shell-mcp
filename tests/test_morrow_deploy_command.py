@@ -33,6 +33,7 @@ def test_deploy_command_is_executable_and_parses() -> None:
         text=True,
     )
     assert "--dry-run" in help_result.stdout
+    assert "--rotate-control-key" in help_result.stdout
 
 
 def test_deploy_command_keeps_release_and_rollback_guards() -> None:
@@ -62,6 +63,7 @@ def test_deploy_command_keeps_release_and_rollback_guards() -> None:
         "activate-production-topology.sh",
         "authorize-release.sh",
         "ensure-production-secrets.sh",
+        "--rotate-control-key",
         "stage_remote_file",
         "activate_production_topology",
         "post_switch_transport_uncertain",
@@ -228,6 +230,29 @@ def test_production_control_credential_is_generated_privately_and_idempotently(
     )
     assert service_env.read_text(encoding="utf-8") == content
     assert generated_value not in second.stdout
+
+    rotated = subprocess.run(
+        [str(ENSURE_PRODUCTION_SECRETS), "--rotate-control-key", str(service_env)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    rotated_content = service_env.read_text(encoding="utf-8")
+    rotated_lines = [
+        line
+        for line in rotated_content.splitlines()
+        if line.startswith("LOCAL_SHELL_MCP_CONTROL_API_KEY=")
+    ]
+    assert len(rotated_lines) == 1
+    rotated_value = rotated_lines[0].split("=", 1)[1]
+    assert rotated_value != generated_value
+    assert len(rotated_value) >= 48
+    assert rotated_value not in rotated.stdout
+    assert generated_value not in rotated.stdout
+    assert "LSM control credential rotated" in rotated.stdout
+    assert "CLOUDFLARE_TUNNEL_TOKEN=keep-existing" in rotated_content
+    assert "LOCAL_SHELL_MCP_OAUTH_ADMIN_PIN=keep-pin" in rotated_content
+    assert service_env.stat().st_mode & 0o777 == 0o600
 
 
 def test_authorized_release_guard_rejects_manual_switch(tmp_path: Path) -> None:

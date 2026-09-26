@@ -1,8 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+rotate_control_key=false
+if test "${1:-}" = "--rotate-control-key"; then
+  rotate_control_key=true
+  shift
+fi
+
 test "$#" -eq 1 || {
-  echo "usage: $0 <service-env>" >&2
+  echo "usage: $0 [--rotate-control-key] <service-env>" >&2
   exit 64
 }
 
@@ -11,7 +17,7 @@ test -f "$service_env"
 test -r "$service_env"
 test -w "$service_env"
 
-if grep -Eq '^LOCAL_SHELL_MCP_CONTROL_API_KEY=.+$' "$service_env"; then
+if ! ${rotate_control_key} && grep -Eq '^LOCAL_SHELL_MCP_CONTROL_API_KEY=.+$' "$service_env"; then
   chmod 600 "$service_env"
   echo "LSM control credential already configured"
   exit 0
@@ -39,4 +45,8 @@ mv -f "$tmp" "$service_env"
 trap - EXIT
 unset control_key
 
-echo "LSM control credential generated"
+if ${rotate_control_key}; then
+  echo "LSM control credential rotated"
+else
+  echo "LSM control credential generated"
+fi
