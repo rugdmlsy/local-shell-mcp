@@ -25,11 +25,13 @@ never printed, and a dry-run never creates or changes secrets.
 
 Morrows MCP uses the same public OAuth boundary with no second ChatGPT-facing
 credential. The public OAuth bearer is validated by LSM and is never forwarded
-to Morrows. LSM strips caller-supplied Morrows identity headers, adds only a
-trusted loopback handoff marker, and Morrows maps that marker to its configured
-AgentInstance. Morrows can therefore keep `MORROWS_REQUIRE_AGENT_AUTH=1` for
-ordinary internal employee/runtime calls without making ChatGPT manage a second
-Bearer token.
+to Morrows. LSM strips caller-supplied Morrows identity headers, then forwards
+only the validated OAuth `client_id` plus optional registered `client_name`
+over the trusted loopback hop. Morrows resolves a stable technical AgentInstance
+from that `client_id`; descriptive agent/account/platform/device identity is
+self-reported separately and never affects authorization. Morrows can therefore
+keep `MORROWS_REQUIRE_AGENT_AUTH=1` for ordinary internal employee/runtime
+calls without making ChatGPT manage a second Bearer token.
 
 ```text
 /home/morrow/lsm-controller/

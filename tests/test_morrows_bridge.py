@@ -8,7 +8,7 @@ from starlette.applications import Starlette
 from starlette.testclient import TestClient
 
 from local_shell_mcp import morrows_bridge
-from local_shell_mcp.auth import AuthMiddleware
+from local_shell_mcp.auth import AuthMiddleware, Principal
 from local_shell_mcp.settings import get_settings
 
 
@@ -48,6 +48,20 @@ class _FakeAsyncClient:
 def test_morrows_proxy_strips_public_identity_and_injects_verified_marker(monkeypatch) -> None:
     _FakeAsyncClient.calls = []
     monkeypatch.setattr(morrows_bridge.httpx, "AsyncClient", _FakeAsyncClient)
+    monkeypatch.setattr(
+        morrows_bridge,
+        "current_principal",
+        lambda: Principal(
+            email=None,
+            subject="local-user",
+            claims={"client_id": "oauth-client-real"},
+        ),
+    )
+    monkeypatch.setattr(
+        morrows_bridge,
+        "oauth_client_name",
+        lambda client_id: "ChatGPT" if client_id == "oauth-client-real" else None,
+    )
 
     app = Starlette(routes=morrows_bridge.morrows_bridge_routes())
     with TestClient(app) as client:
@@ -57,6 +71,8 @@ def test_morrows_proxy_strips_public_identity_and_injects_verified_marker(monkey
                 "Authorization": "Bearer lsm-oauth-token",
                 "X-Agent-Instance-Id": "00000000-0000-0000-0000-000000000000",
                 "X-Morrows-LSM-OAuth-Verified": "spoofed",
+                "X-Morrows-LSM-OAuth-Client-Id": "spoofed-client",
+                "X-Morrows-LSM-OAuth-Client-Name": "spoofed-name",
                 "Mcp-Protocol-Version": "2025-06-18",
                 "Accept": "application/json, text/event-stream",
             },
@@ -71,6 +87,10 @@ def test_morrows_proxy_strips_public_identity_and_injects_verified_marker(monkey
     assert "authorization" not in {name.lower() for name in call["headers"]}
     assert "x-agent-instance-id" not in {name.lower() for name in call["headers"]}
     assert call["headers"]["X-Morrows-LSM-OAuth-Verified"] == "1"
+    assert call["headers"]["X-Morrows-LSM-OAuth-Client-Id"] == "oauth-client-real"
+    assert call["headers"]["X-Morrows-LSM-OAuth-Client-Name"] == "ChatGPT"
+    assert "spoofed-client" not in repr(call)
+    assert "spoofed-name" not in repr(call)
     assert "lsm-oauth-token" not in repr(call)
     assert "00000000-0000-0000-0000-000000000000" not in repr(call)
     assert call["headers"]["mcp-protocol-version"] == "2025-06-18"
@@ -103,6 +123,7 @@ def test_morrows_route_is_protected_by_lsm_oauth_before_proxy(tmp_path, monkeypa
                 "aud": "http://testserver",
                 "iss": "http://testserver",
                 "sub": "chatgpt-test",
+                "client_id": "oauth-client-authenticated",
                 "scope": "shell:read",
             },
             secret,
@@ -117,3 +138,22 @@ def test_morrows_route_is_protected_by_lsm_oauth_before_proxy(tmp_path, monkeypa
         assert len(_FakeAsyncClient.calls) == 1
 
     get_settings.cache_clear()
+
+def test_morrows_proxy_rejects_when_authenticated_principal_has_no_client_id(monkeypatch) -> None:
+    _FakeAsyncClient.calls = []
+    monkeypatch.setattr(morrows_bridge.httpx, "AsyncClient", _FakeAsyncClient)
+    monkeypatch.setattr(
+        morrows_bridge,
+        "current_principal",
+        lambda: Principal(email=None, subject="local-user", claims={"scope": "shell:read"}),
+    )
+
+    app = Starlette(routes=morrows_bridge.morrows_bridge_routes())
+    with TestClient(app) as client:
+        response = client.post(
+            "/morrows",
+            content=b'{"jsonrpc":"2.0","id":1,"method":"tools/list"}',
+        )
+
+    assert response.status_code == 401
+    assert _FakeAsyncClient.calls == []
