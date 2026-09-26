@@ -294,6 +294,13 @@ def _get_client(client_id: str) -> OAuthClient | None:
         return _CLIENTS.get(client_id)
 
 
+def oauth_client_name(client_id: str) -> str | None:
+    """Return trusted registered-client metadata for an already validated OAuth client id."""
+
+    client = _get_client(client_id)
+    return client.client_name if client is not None else None
+
+
 def _prune_clients_locked(now: int, *, reserve_slot: bool = False) -> None:
     for client_id, client in list(_CLIENTS.items()):
         if not client.approved and now - client.created_at > OAUTH_PENDING_CLIENT_TTL_S:
