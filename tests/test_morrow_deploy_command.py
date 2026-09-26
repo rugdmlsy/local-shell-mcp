@@ -10,6 +10,7 @@ DEPLOY_COMMAND = REPOSITORY / "deploy/morrow/deploy-vps.sh"
 MCP_PROBE = REPOSITORY / "scripts/probe-mcp.py"
 HOST_CONFIG = REPOSITORY / "deploy/morrow/host.yaml.example"
 HOST_LAUNCHER = REPOSITORY / "deploy/morrow/run-host-vps.sh"
+HOST_UNIT = REPOSITORY / "deploy/morrow/local-shell-mcp.service"
 ROUTER_CONFIG = REPOSITORY / "deploy/morrow/mcp-router.caddy"
 INSTALL_TOPOLOGY = REPOSITORY / "deploy/morrow/install-production-topology.sh"
 ACTIVATE_TOPOLOGY = REPOSITORY / "deploy/morrow/activate-production-topology.sh"
@@ -273,6 +274,7 @@ def test_authorized_release_guard_rejects_manual_switch(tmp_path: Path) -> None:
 def test_production_topology_owns_shared_caddy_edge() -> None:
     config = HOST_CONFIG.read_text(encoding="utf-8")
     launcher = HOST_LAUNCHER.read_text(encoding="utf-8")
+    unit = HOST_UNIT.read_text(encoding="utf-8")
     router = ROUTER_CONFIG.read_text(encoding="utf-8")
     verifier = VERIFY_RELEASE.read_text(encoding="utf-8")
     installer = INSTALL_TOPOLOGY.read_text(encoding="utf-8")
@@ -285,6 +287,7 @@ def test_production_topology_owns_shared_caddy_edge() -> None:
     assert "AUTHORIZED_RELEASE" in launcher
     assert "refusing to start an unmanaged Local Shell MCP production release" in launcher
     assert "Deploy with: ./deploy/morrow/deploy-vps.sh" in launcher
+    assert "RestartPreventExitStatus=78" in unit
     assert router.lstrip().startswith("# Shared loopback edge")
     assert "\n:8765 {" in router
     assert "bind 127.0.0.1" in router
