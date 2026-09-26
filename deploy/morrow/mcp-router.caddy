@@ -1,7 +1,8 @@
 # Shared loopback edge for mcp.xycdev.com.
 # Cloudflared points the hostname at 127.0.0.1:8765. Caddy owns that
-# listener, sends Morrows paths to :8787, and passes every other path
-# (including /mcp and OAuth metadata) to Local Shell MCP on :8766.
+# listener. Browser/control-plane Morrows paths go directly to :8787, while
+# Morrows MCP traffic goes through Local Shell MCP on :8766 so it shares the
+# same ChatGPT OAuth boundary as the other MCP integrations.
 :8765 {
 	bind 127.0.0.1
 
@@ -16,8 +17,7 @@
 
 	@morrows_mcp path /morrows /morrows/
 	handle @morrows_mcp {
-		rewrite * /mcp
-		reverse_proxy 127.0.0.1:8787
+		reverse_proxy 127.0.0.1:8766
 	}
 
 	@morrows_health path /morrows/health

@@ -284,6 +284,7 @@ SENSITIVE_SETTING_KEYS = {
     "control_api_key",
     "oauth_admin_pin",
     "oauth_jwt_secret",
+    "morrows_bridge_token",
     "remote_mobile_apns_team_id",
     "remote_mobile_apns_key_id",
     "remote_mobile_apns_key_path",
@@ -465,6 +466,13 @@ if _PYDANTIC_AVAILABLE:
         require_auth_for_mcp_discovery: bool = True
         mcp_session_idle_timeout_s: int = 180
         mcp_max_sessions: int = 1024
+
+        # Optional authenticated edge bridge for the Morrows MCP. Public clients
+        # authenticate with this LSM OAuth server; only this private upstream
+        # credential is presented to the loopback Morrows service.
+        morrows_bridge_url: str = "http://127.0.0.1:8787/mcp"
+        morrows_bridge_token: str | None = None
+        morrows_bridge_agent_id: str | None = None
 
         # Built-in OAuth 2.1 authorization server for ChatGPT MCP connectors.
         # Set public_base_url to the externally reachable HTTPS origin, e.g. https://local-shell-mcp.example.com
@@ -703,6 +711,10 @@ else:
         require_auth_for_mcp_discovery: bool = True
         mcp_session_idle_timeout_s: int = 180
         mcp_max_sessions: int = 1024
+
+        morrows_bridge_url: str = "http://127.0.0.1:8787/mcp"
+        morrows_bridge_token: str | None = None
+        morrows_bridge_agent_id: str | None = None
 
         public_base_url: str | None = None
         oauth_issuer: str | None = None

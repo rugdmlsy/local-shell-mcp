@@ -37,6 +37,21 @@ curl -fsS --max-time 2 \
   -H 'Host: mcp.xycdev.com' \
   http://127.0.0.1:8765/healthz >/dev/null
 
+# The public Morrows MCP must enter through LSM OAuth rather than reaching the
+# Morrows Agent credential middleware directly.
+morrows_headers="$(mktemp)"
+trap 'rm -f "${morrows_headers}"' EXIT
+morrows_status="$(curl -sS --max-time 2 -o /dev/null -D "${morrows_headers}" -w '%{http_code}' \
+  -H 'Host: mcp.xycdev.com' \
+  -H 'Accept: application/json, text/event-stream' \
+  -H 'Content-Type: application/json' \
+  --data '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"release-probe","version":"1"}}}' \
+  http://127.0.0.1:8765/morrows)"
+test "${morrows_status}" = 401
+grep -Eiq '^www-authenticate: Bearer .*resource_metadata=' "${morrows_headers}"
+rm -f "${morrows_headers}"
+trap - EXIT
+
 pid="$(systemctl show "${service_name}" -p MainPID --value)"
 test -n "${pid}"
 test "${pid}" != 0
