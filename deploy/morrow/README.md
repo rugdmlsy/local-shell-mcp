@@ -9,7 +9,8 @@ Cloudflare Tunnel
        |
        v
 Caddy 127.0.0.1:8765
-  |-- /morrows* -> Morrows 127.0.0.1:8787
+  |-- /morrows (MCP) -> Local Shell MCP OAuth -> Morrows 127.0.0.1:8787/mcp
+  |-- /morrows/ui + /morrows/api -> Morrows 127.0.0.1:8787
   '-- everything else -> Local Shell MCP 127.0.0.1:8766
 ```
 
@@ -21,6 +22,19 @@ The same deploy command owns the private LSM control-plane credential:
 `ensure-production-secrets.sh` generates `LOCAL_SHELL_MCP_CONTROL_API_KEY`
 inside the existing mode-0600 `service.env` when it is missing. The value is
 never printed, and a dry-run never creates or changes secrets.
+
+Morrows MCP uses the same public OAuth boundary. Configure one long-lived,
+revocable Morrows bridge credential and its fixed AgentInstance identity only in
+that private `service.env`:
+
+```text
+LOCAL_SHELL_MCP_MORROWS_BRIDGE_TOKEN=mrw_agent_<secret>
+LOCAL_SHELL_MCP_MORROWS_BRIDGE_AGENT_ID=<agent-instance-uuid>
+```
+
+The public OAuth bearer is validated by LSM and is never forwarded to Morrows.
+LSM replaces it with this loopback-only bridge identity. Morrows can therefore
+keep `MORROWS_REQUIRE_AGENT_AUTH=1` for its internal employee surface.
 
 ```text
 /home/morrow/lsm-controller/

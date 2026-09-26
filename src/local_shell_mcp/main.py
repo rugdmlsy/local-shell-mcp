@@ -79,6 +79,7 @@ def _with_oauth_routes(inner_app, mcp=None):  # noqa: ANN001
     from .downloads import download_routes
     from .human_ui import ui_routes
     from .live_channel_routes import live_channel_routes
+    from .morrows_bridge import morrows_bridge_routes
     from .oauth import (
         oauth_authorize_get,
         oauth_authorize_post,
@@ -121,6 +122,7 @@ def _with_oauth_routes(inner_app, mcp=None):  # noqa: ANN001
         Mount("/", app=inner_app),
     ]
     settings = get_settings()
+    routes[2:2] = morrows_bridge_routes()
     routes[2:2] = download_routes()
     routes[2:2] = control_routes()
     if settings.ui_enabled and settings.live_workspace_enabled:
