@@ -63,11 +63,22 @@ independent-connection fallback. If repeated rounds cannot establish either SSH
 path, deployment exits as indeterminate and preserves `current` instead of
 blindly rolling back through a control path that is itself unhealthy.
 Re-running the same release restarts it without replacing the `previous` rollback
-link. Do not hand-edit the production LSM port, Caddy import, launcher, or unit
-as a normal deployment procedure. Change the files in this directory first and
-deploy through `deploy-vps.sh`. In particular, never stop or rewire the LSM
-control path from an agent that depends on that same path unless an independent
-OOB recovery path is already proven.
+link. Do not hand-edit the production LSM port, Caddy import, launcher, unit, or
+`current` release as a normal deployment procedure. Change the files in this
+directory first and deploy through `deploy-vps.sh`. Production startup enforces
+this with `${deploy_root}/AUTHORIZED_RELEASE`: the launcher refuses to start
+when the current release and its READY commit do not exactly match the release
+last authorized by `deploy-vps.sh` (or the managed rollback script), and prints:
+
+```text
+ERROR: refusing to start an unmanaged Local Shell MCP production release.
+Deploy with: ./deploy/morrow/deploy-vps.sh
+```
+
+Normal `systemctl restart local-shell-mcp` remains valid for an already
+authorized release. In particular, never stop or rewire the LSM control path
+from an agent that depends on that same path unless an independent OOB recovery
+path is already proven.
 
 Service restarts are queued with non-interactive `sudo`; the command waits
 for a changed systemd PID whose interpreter belongs to the target release before

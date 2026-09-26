@@ -22,6 +22,9 @@ done
 systemctl is-active --quiet "${service_name}"
 test "$(basename "$(readlink -f "${deploy_root}/current")")" = "${release_name}"
 test "$("${deploy_root}/current/.venv/bin/local-shell-mcp" --version)" = "${version}"
+IFS=$'\t' read -r authorized_release authorized_sha < "${deploy_root}/AUTHORIZED_RELEASE"
+test "${authorized_release}" = "${release_name}"
+test "${authorized_sha}" = "$(cat "${deploy_root}/current/READY")"
 set -a
 . "${service_env}"
 set +a

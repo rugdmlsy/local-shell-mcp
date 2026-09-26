@@ -471,6 +471,9 @@ rollback_on_failure() {
 }
 trap rollback_on_failure EXIT
 
+remote bash -s -- "${release_name}" "${commit_sha}" "${deploy_root}" \
+  < "${script_dir}/authorize-release.sh"
+
 old_pid="$(service_pid)"
 if test "${current_release}" = "${release_name}"; then
   echo "release is already current; restarting ${service_name} without changing previous"

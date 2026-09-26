@@ -13,6 +13,7 @@ HOST_LAUNCHER = REPOSITORY / "deploy/morrow/run-host-vps.sh"
 ROUTER_CONFIG = REPOSITORY / "deploy/morrow/mcp-router.caddy"
 INSTALL_TOPOLOGY = REPOSITORY / "deploy/morrow/install-production-topology.sh"
 ACTIVATE_TOPOLOGY = REPOSITORY / "deploy/morrow/activate-production-topology.sh"
+AUTHORIZE_RELEASE = REPOSITORY / "deploy/morrow/authorize-release.sh"
 ENSURE_PRODUCTION_SECRETS = REPOSITORY / "deploy/morrow/ensure-production-secrets.sh"
 VERIFY_RELEASE = REPOSITORY / "deploy/morrow/verify-release.sh"
 CHECK_RELEASE_PROCESS = REPOSITORY / "deploy/morrow/check-release-process.sh"
@@ -58,6 +59,7 @@ def test_deploy_command_keeps_release_and_rollback_guards() -> None:
         "mcp-router.caddy",
         "install-production-topology.sh",
         "activate-production-topology.sh",
+        "authorize-release.sh",
         "ensure-production-secrets.sh",
         "stage_remote_file",
         "activate_production_topology",
@@ -94,6 +96,7 @@ def test_post_switch_verifier_and_timeout_helper_are_deterministic() -> None:
         SSH_GUARD,
         INSTALL_TOPOLOGY,
         ACTIVATE_TOPOLOGY,
+        AUTHORIZE_RELEASE,
         ENSURE_PRODUCTION_SECRETS,
     ):
         subprocess.run(["bash", "-n", str(script)], check=True)
@@ -226,6 +229,47 @@ def test_production_control_credential_is_generated_privately_and_idempotently(
     assert generated_value not in second.stdout
 
 
+def test_authorized_release_guard_rejects_manual_switch(tmp_path: Path) -> None:
+    deploy_root = tmp_path / "lsm-controller"
+    releases = deploy_root / "releases"
+    releases.mkdir(parents=True)
+    sha1 = "1" * 40
+    sha2 = "2" * 40
+    release1 = releases / "morrow-v4.3.2-test1-111111111111"
+    release2 = releases / "morrow-v4.3.2-test2-222222222222"
+    for release, sha in ((release1, sha1), (release2, sha2)):
+        (release / ".venv/bin").mkdir(parents=True)
+        executable = release / ".venv/bin/local-shell-mcp"
+        executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        executable.chmod(0o755)
+        (release / "READY").write_text(sha + "\n", encoding="utf-8")
+
+    subprocess.run(
+        [str(AUTHORIZE_RELEASE), release1.name, sha1, str(deploy_root)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert (deploy_root / "AUTHORIZED_RELEASE").read_text(encoding="utf-8") == (
+        f"{release1.name}\t{sha1}\n"
+    )
+
+    blocked = subprocess.run(
+        [
+            str(REPOSITORY / "deploy/morrow/switch-release.sh"),
+            release2.name,
+            str(deploy_root),
+            "not-a-real.service",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert blocked.returncode == 78
+    assert "Deploy with: ./deploy/morrow/deploy-vps.sh" in blocked.stderr
+    assert not (deploy_root / "current").exists()
+
+
 def test_production_topology_owns_shared_caddy_edge() -> None:
     config = HOST_CONFIG.read_text(encoding="utf-8")
     launcher = HOST_LAUNCHER.read_text(encoding="utf-8")
@@ -238,6 +282,9 @@ def test_production_topology_owns_shared_caddy_edge() -> None:
     assert "LOCAL_SHELL_MCP_PORT=8766" in launcher
     assert 'rm -f "${config_root}/control-api-key"' in launcher
     assert "control_key_tmp" not in launcher
+    assert "AUTHORIZED_RELEASE" in launcher
+    assert "refusing to start an unmanaged Local Shell MCP production release" in launcher
+    assert "Deploy with: ./deploy/morrow/deploy-vps.sh" in launcher
     assert router.lstrip().startswith("# Shared loopback edge")
     assert "\n:8765 {" in router
     assert "bind 127.0.0.1" in router

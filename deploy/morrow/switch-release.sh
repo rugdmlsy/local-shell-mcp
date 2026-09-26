@@ -17,6 +17,18 @@ readonly release_dir="${deploy_root}/releases/${release_name}"
 }
 test -f "${release_dir}/READY"
 test -x "${release_dir}/.venv/bin/local-shell-mcp"
+readonly expected_sha="$(cat "${release_dir}/READY")"
+readonly guard_file="${deploy_root}/AUTHORIZED_RELEASE"
+authorized_release=""
+authorized_sha=""
+if test -f "${guard_file}"; then
+  IFS=$'\t' read -r authorized_release authorized_sha < "${guard_file}" || true
+fi
+if test "${authorized_release}" != "${release_name}" || test "${authorized_sha}" != "${expected_sha}"; then
+  echo "ERROR: refusing unmanaged production switch to ${release_name}." >&2
+  echo "Deploy with: ./deploy/morrow/deploy-vps.sh" >&2
+  exit 78
+fi
 
 if test -L "${deploy_root}/current"; then
   current_target="$(readlink "${deploy_root}/current")"

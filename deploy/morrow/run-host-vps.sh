@@ -3,6 +3,23 @@ set -euo pipefail
 
 readonly deploy_root=/home/morrow/lsm-controller
 readonly config_root=/home/morrow/.config/local-shell-mcp
+readonly guard_file="${deploy_root}/AUTHORIZED_RELEASE"
+
+deployment_guard_error() {
+  echo "ERROR: refusing to start an unmanaged Local Shell MCP production release." >&2
+  echo "Deploy with: ./deploy/morrow/deploy-vps.sh" >&2
+  echo "For rollback, use the managed rollback-release.sh path emitted by deploy-vps.sh." >&2
+  exit 78
+}
+
+test -L "${deploy_root}/current" || deployment_guard_error
+test -f "${guard_file}" || deployment_guard_error
+current_dir="$(readlink -f "${deploy_root}/current")"
+current_release="$(basename "${current_dir}")"
+current_sha="$(cat "${current_dir}/READY" 2>/dev/null || true)"
+IFS=$'\t' read -r authorized_release authorized_sha < "${guard_file}" || deployment_guard_error
+test "${current_release}" = "${authorized_release}" || deployment_guard_error
+test -n "${current_sha}" && test "${current_sha}" = "${authorized_sha}" || deployment_guard_error
 
 set -a
 # shellcheck disable=SC1091
