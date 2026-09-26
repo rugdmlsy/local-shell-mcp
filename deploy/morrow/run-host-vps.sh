@@ -9,6 +9,18 @@ set -a
 source "${config_root}/service.env"
 set +a
 
+# Publish only the LSM control API credential to an adjacent-service handoff
+# file. This avoids copying it into another service's environment and never
+# writes the value to stdout/stderr.
+readonly control_key_file="${config_root}/control-api-key"
+if [[ -n "${LOCAL_SHELL_MCP_CONTROL_API_KEY:-}" ]]; then
+  umask 077
+  control_key_tmp="$(mktemp "${control_key_file}.XXXXXX")"
+  printf '%s\n' "${LOCAL_SHELL_MCP_CONTROL_API_KEY}" > "${control_key_tmp}"
+  chmod 600 "${control_key_tmp}"
+  mv -f "${control_key_tmp}" "${control_key_file}"
+fi
+
 # These values are for adjacent services, not child processes or LSM itself.
 unset CLOUDFLARE_TUNNEL_TOKEN LOCAL_SHELL_MCP_PERSISTENT_CREDENTIALS
 
