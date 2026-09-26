@@ -296,10 +296,10 @@ def test_production_topology_owns_shared_caddy_edge() -> None:
     assert "@morrows_browser_root {" in router
     assert "method GET" in router
     assert "header Accept *text/html*" in router
-    assert "redir /morrows/ui/ 302" in router
+    assert "redir * /morrows/ui/ 302" in router
     assert "@morrows_mcp path /morrows /morrows/" in router
     assert router.index("@morrows_ui_root path /morrows/ui") < router.index("handle /morrows/ui/*")
-    assert "redir /morrows/ui/ 308" in router
+    assert "redir * /morrows/ui/ 308" in router
     assert "http://127.0.0.1:8766/healthz" in verifier
     assert "http://127.0.0.1:8765/healthz" in verifier
     assert "install -m 0755" in installer

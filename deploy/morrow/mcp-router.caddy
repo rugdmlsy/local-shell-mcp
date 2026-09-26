@@ -11,7 +11,7 @@
 		header Accept *text/html*
 	}
 	handle @morrows_browser_root {
-		redir /morrows/ui/ 302
+		redir * /morrows/ui/ 302
 	}
 
 	@morrows_mcp path /morrows /morrows/
@@ -33,7 +33,7 @@
 
 	@morrows_ui_root path /morrows/ui
 	handle @morrows_ui_root {
-		redir /morrows/ui/ 308
+		redir * /morrows/ui/ 308
 	}
 
 	handle /morrows/ui/* {

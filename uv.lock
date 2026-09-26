@@ -859,7 +859,7 @@ wheels = [
 
 [[package]]
 name = "local-shell-mcp"
-version = "4.3.2+morrow.11"
+version = "4.3.2+morrow.12"
 source = { editable = "." }
 dependencies = [
     { name = "aiofiles" },
