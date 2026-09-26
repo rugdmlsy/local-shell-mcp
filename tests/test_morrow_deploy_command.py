@@ -236,10 +236,8 @@ def test_production_topology_owns_shared_caddy_edge() -> None:
     assert "port: 8766" in config
     assert "LOCAL_SHELL_MCP_HOST=127.0.0.1" in launcher
     assert "LOCAL_SHELL_MCP_PORT=8766" in launcher
-    assert 'readonly control_key_file="${config_root}/control-api-key"' in launcher
-    assert "LOCAL_SHELL_MCP_CONTROL_API_KEY" in launcher
-    assert 'chmod 600 "${control_key_tmp}"' in launcher
-    assert 'mv -f "${control_key_tmp}" "${control_key_file}"' in launcher
+    assert 'rm -f "${config_root}/control-api-key"' in launcher
+    assert "control_key_tmp" not in launcher
     assert router.lstrip().startswith("# Shared loopback edge")
     assert "\n:8765 {" in router
     assert "bind 127.0.0.1" in router
