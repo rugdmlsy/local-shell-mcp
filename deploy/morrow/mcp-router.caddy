@@ -5,6 +5,15 @@
 :8765 {
 	bind 127.0.0.1
 
+	@morrows_browser_root {
+		method GET
+		path /morrows /morrows/
+		header Accept *text/html*
+	}
+	handle @morrows_browser_root {
+		redir /morrows/ui/ 302
+	}
+
 	@morrows_mcp path /morrows /morrows/
 	handle @morrows_mcp {
 		rewrite * /mcp
@@ -22,14 +31,14 @@
 		reverse_proxy 127.0.0.1:8787
 	}
 
-	handle /morrows/ui/* {
-		uri strip_prefix /morrows/ui
-		reverse_proxy 127.0.0.1:8787
-	}
-
 	@morrows_ui_root path /morrows/ui
 	handle @morrows_ui_root {
 		redir /morrows/ui/ 308
+	}
+
+	handle /morrows/ui/* {
+		uri strip_prefix /morrows/ui
+		reverse_proxy 127.0.0.1:8787
 	}
 
 	handle {
