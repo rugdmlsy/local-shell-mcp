@@ -34,6 +34,15 @@ self-reported separately and never affects authorization. Morrows can therefore
 keep `MORROWS_REQUIRE_AGENT_AUTH=1` for ordinary internal employee/runtime
 calls without making ChatGPT manage a second Bearer token.
 
+Production source and release orchestration live on the Mac. Edit, test, commit,
+push, create/push release tags, and invoke `deploy-vps.sh` from the Mac checkout.
+The VPS is deploy-only: it builds and activates only commits/tags already present
+in `https://github.com/rugdmlsy/local-shell-mcp.git`. The deploy script rejects
+non-macOS callers, local/localhost deployment targets, alternate repository
+sources, dirty source, and a local HEAD that does not exactly match the pushed
+branch. Do not create production commits or tags in VPS worktrees, and do not
+use a local bare or `file://` repository as a production release source.
+
 ```text
 /home/morrow/lsm-controller/
   releases/<tag>-<sha>/
@@ -105,6 +114,8 @@ them only when deliberately targeting a different environment with
 service environment when testing a separate deployment. The post-switch SSH
 wall-clock deadline defaults to 45 seconds per attempt and can be adjusted with
 `LSM_DEPLOY_POST_SWITCH_SSH_DEADLINE_S` when diagnosing unusually slow links.
+`LSM_DEPLOY_SSH_HOST` must still name a remote host; `local`, `localhost`, and
+loopback addresses are intentionally rejected for production deployment.
 
 ## Build a pinned release
 

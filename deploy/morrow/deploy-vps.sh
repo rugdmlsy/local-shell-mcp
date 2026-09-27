@@ -18,7 +18,7 @@ readonly deploy_root="${LSM_DEPLOY_ROOT:-/home/morrow/lsm-controller}"
 readonly service_name="${LSM_DEPLOY_SERVICE:-local-shell-mcp.service}"
 readonly public_base_url="${LSM_DEPLOY_PUBLIC_BASE_URL:-https://mcp.xycdev.com}"
 readonly expected_hostname="${LSM_DEPLOY_EXPECTED_HOSTNAME:-vps-96468177}"
-readonly repository_url="${LSM_DEPLOY_REPOSITORY_URL:-https://github.com/rugdmlsy/local-shell-mcp.git}"
+readonly repository_url="https://github.com/rugdmlsy/local-shell-mcp.git"
 readonly uv_bin="${LSM_DEPLOY_UV_BIN:-${deploy_root}/tools/uv-0.11.25/bin/uv}"
 readonly service_env="${LSM_DEPLOY_SERVICE_ENV:-/home/morrow/.config/local-shell-mcp/service.env}"
 
@@ -39,6 +39,17 @@ while test "$#" -gt 0; do
   esac
   shift
 done
+
+if test "$(uname -s)" != Darwin; then
+  echo "LSM source/release orchestration must run from the Mac source checkout; the VPS is deploy-only" >&2
+  exit 1
+fi
+case "${ssh_host}" in
+  local|localhost|127.0.0.1|::1)
+    echo "LSM_DEPLOY_SSH_HOST must name the remote VPS; local deployment is forbidden" >&2
+    exit 1
+    ;;
+esac
 
 [[ "${ssh_host}" =~ ^[0-9A-Za-z._@-]+$ ]] || {
   echo "invalid SSH host: ${ssh_host}" >&2
@@ -153,6 +164,10 @@ trap cleanup_ssh EXIT
 cd "${repository_root}"
 test -z "$(git status --porcelain)" || {
   echo "working tree must be clean before deployment" >&2
+  exit 1
+}
+test "$(git remote get-url origin)" = "${repository_url}" || {
+  echo "origin must be ${repository_url}" >&2
   exit 1
 }
 

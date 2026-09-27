@@ -79,6 +79,11 @@ def test_deploy_command_keeps_release_and_rollback_guards() -> None:
     assert 'local release_name="$1"' not in script
     assert "remote_guarded()" in script
     assert "remote_fresh_guarded()" in script
+    assert 'test "$(uname -s)" != Darwin' in script
+    assert "local deployment is forbidden" in script
+    assert 'readonly repository_url="https://github.com/rugdmlsy/local-shell-mcp.git"' in script
+    assert 'test "$(git remote get-url origin)" = "${repository_url}"' in script
+    assert "LSM_DEPLOY_REPOSITORY_URL" not in script
     assert script.index("if ${post_switch_transport_uncertain}; then") < script.index(
         'echo "post-switch verification failed; rolling back"'
     )
