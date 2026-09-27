@@ -52,6 +52,18 @@ grep -Eiq '^www-authenticate: Bearer .*resource_metadata=' "${morrows_headers}"
 rm -f "${morrows_headers}"
 trap - EXIT
 
+# The public Morrows control API must share the same LSM OAuth boundary. A
+# direct Morrows response would be 401 without this OAuth challenge header.
+morrows_control_headers="$(mktemp)"
+trap 'rm -f "${morrows_control_headers}"' EXIT
+morrows_control_status="$(curl -sS --max-time 2 -o /dev/null -D "${morrows_control_headers}" -w '%{http_code}' \
+  -H 'Host: mcp.xycdev.com' \
+  http://127.0.0.1:8765/morrows/api/operator-session)"
+test "${morrows_control_status}" = 401
+grep -Eiq '^www-authenticate: Bearer .*resource_metadata=' "${morrows_control_headers}"
+rm -f "${morrows_control_headers}"
+trap - EXIT
+
 pid="$(systemctl show "${service_name}" -p MainPID --value)"
 test -n "${pid}"
 test "${pid}" != 0

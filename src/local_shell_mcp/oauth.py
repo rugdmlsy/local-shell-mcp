@@ -301,6 +301,15 @@ def oauth_client_name(client_id: str) -> str | None:
     return client.client_name if client is not None else None
 
 
+def oauth_client_redirect_uris(client_id: str) -> tuple[str, ...]:
+    """Return trusted redirect metadata for an approved OAuth client."""
+
+    client = _get_client(client_id)
+    if client is None or not client.approved:
+        return ()
+    return tuple(client.redirect_uris)
+
+
 def _prune_clients_locked(now: int, *, reserve_slot: bool = False) -> None:
     for client_id, client in list(_CLIENTS.items()):
         if not client.approved and now - client.created_at > OAUTH_PENDING_CLIENT_TTL_S:

@@ -10,7 +10,8 @@ Cloudflare Tunnel
        v
 Caddy 127.0.0.1:8765
   |-- /morrows (MCP) -> Local Shell MCP OAuth -> Morrows 127.0.0.1:8787/mcp
-  |-- /morrows/ui + /morrows/api -> Morrows 127.0.0.1:8787
+  |-- /morrows/ui -> Morrows 127.0.0.1:8787
+  |-- /morrows/api -> Local Shell MCP OAuth -> Morrows 127.0.0.1:8787/api
   '-- everything else -> Local Shell MCP 127.0.0.1:8766
 ```
 

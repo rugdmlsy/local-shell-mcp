@@ -139,6 +139,75 @@ def test_morrows_route_is_protected_by_lsm_oauth_before_proxy(tmp_path, monkeypa
 
     get_settings.cache_clear()
 
+
+def test_morrows_control_proxy_accepts_only_first_party_browser_oauth(monkeypatch) -> None:
+    _FakeAsyncClient.calls = []
+    monkeypatch.setattr(morrows_bridge.httpx, "AsyncClient", _FakeAsyncClient)
+    monkeypatch.setattr(
+        morrows_bridge,
+        "current_principal",
+        lambda: Principal(
+            email=None,
+            subject="local-user",
+            claims={"client_id": "browser-client"},
+        ),
+    )
+    monkeypatch.setattr(morrows_bridge, "oauth_client_name", lambda _client_id: "Morrows WebUI")
+    monkeypatch.setattr(morrows_bridge, "public_base_url", lambda _request: "http://testserver")
+    monkeypatch.setattr(
+        morrows_bridge,
+        "oauth_client_redirect_uris",
+        lambda _client_id: ("http://testserver/morrows/ui/",),
+    )
+
+    app = Starlette(routes=morrows_bridge.morrows_bridge_routes())
+    with TestClient(app, base_url="http://testserver") as client:
+        response = client.get(
+            "/morrows/api/tasks?limit=5",
+            headers={
+                "Authorization": "Bearer lsm-oauth-token",
+                "X-Morrows-LSM-OAuth-Control": "spoofed",
+            },
+        )
+
+    assert response.status_code == 200
+    assert len(_FakeAsyncClient.calls) == 1
+    call = _FakeAsyncClient.calls[0]
+    assert call["url"] == "http://127.0.0.1:8787/api/tasks?limit=5"
+    assert "authorization" not in {name.lower() for name in call["headers"]}
+    assert call["headers"]["X-Morrows-LSM-OAuth-Verified"] == "1"
+    assert call["headers"]["X-Morrows-LSM-OAuth-Client-Id"] == "browser-client"
+    assert call["headers"]["X-Morrows-LSM-OAuth-Control"] == "1"
+    assert "spoofed" not in repr(call)
+
+
+def test_morrows_control_proxy_rejects_non_browser_oauth_client(monkeypatch) -> None:
+    _FakeAsyncClient.calls = []
+    monkeypatch.setattr(morrows_bridge.httpx, "AsyncClient", _FakeAsyncClient)
+    monkeypatch.setattr(
+        morrows_bridge,
+        "current_principal",
+        lambda: Principal(
+            email=None,
+            subject="agent-user",
+            claims={"client_id": "chatgpt-client"},
+        ),
+    )
+    monkeypatch.setattr(morrows_bridge, "oauth_client_name", lambda _client_id: "ChatGPT")
+    monkeypatch.setattr(
+        morrows_bridge,
+        "oauth_client_redirect_uris",
+        lambda _client_id: ("https://chat.openai.com/aip/callback",),
+    )
+    monkeypatch.setattr(morrows_bridge, "public_base_url", lambda _request: "http://testserver")
+
+    app = Starlette(routes=morrows_bridge.morrows_bridge_routes())
+    with TestClient(app, base_url="http://testserver") as client:
+        response = client.get("/morrows/api/tasks")
+
+    assert response.status_code == 403
+    assert _FakeAsyncClient.calls == []
+
 def test_morrows_proxy_rejects_when_authenticated_principal_has_no_client_id(monkeypatch) -> None:
     _FakeAsyncClient.calls = []
     monkeypatch.setattr(morrows_bridge.httpx, "AsyncClient", _FakeAsyncClient)

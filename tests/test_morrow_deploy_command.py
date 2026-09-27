@@ -329,11 +329,18 @@ def test_production_topology_owns_shared_caddy_edge() -> None:
     assert "reverse_proxy 127.0.0.1:8766" in morrows_mcp
     assert "reverse_proxy 127.0.0.1:8787" not in morrows_mcp
     assert "rewrite * /mcp" not in morrows_mcp
+    morrows_api = router.split("handle /morrows/api/*", 1)[1].split(
+        "@morrows_ui_root", 1
+    )[0]
+    assert "reverse_proxy 127.0.0.1:8766" in morrows_api
+    assert "reverse_proxy 127.0.0.1:8787" not in morrows_api
+    assert "strip_prefix /morrows" not in morrows_api
     assert router.index("@morrows_ui_root path /morrows/ui") < router.index("handle /morrows/ui/*")
     assert "redir * /morrows/ui/ 308" in router
     assert "http://127.0.0.1:8766/healthz" in verifier
     assert "http://127.0.0.1:8765/healthz" in verifier
     assert "http://127.0.0.1:8765/morrows" in verifier
+    assert "http://127.0.0.1:8765/morrows/api/operator-session" in verifier
     assert "www-authenticate: Bearer" in verifier
     assert "install -m 0755" in installer
     assert "local-shell-mcp.service" in installer
