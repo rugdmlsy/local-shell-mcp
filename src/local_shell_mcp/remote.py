@@ -4,18 +4,15 @@ import argparse
 import asyncio
 import contextlib
 import hashlib
-import importlib.metadata as importlib_metadata
 import json
 import math
 import os
-import re
 import secrets
 import shlex
 import shutil
 import socket
 import subprocess
 import sys
-import tarfile
 import threading
 import time
 import urllib.error
@@ -24,11 +21,8 @@ import urllib.request
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from io import BytesIO
 from pathlib import Path
 from typing import Any
-
-import httpx
 
 from . import __version__
 from .audit import audit, suppress_audit
@@ -112,12 +106,6 @@ REMOTE_WORKER_LANE_PROTOCOL_VERSION = 2
 REMOTE_WORKER_POLL_PROTOCOL_VERSION = REMOTE_WORKER_LANE_PROTOCOL_VERSION
 _WORKER_CONNECT_TIMEOUT_S = 10.0
 _WORKER_POLL_TIMEOUT_GRACE_S = 10.0
-# The remote worker is designed to start on machines that only have Python, curl,
-# and tar. Keep this empty unless a dependency is pure Python and imported on the
-# worker startup path. Tool-specific dependencies such as Playwright should be
-# installed by the tool command on the remote machine, not vendored from the
-# controller's Python ABI.
-REMOTE_WORKER_DISTRIBUTIONS: tuple[str, ...] = ()
 REMOTE_WORKER_REGISTRY_FILE_NAME = "remote-workers.json"
 REMOTE_WORKER_REGISTRY_BACKUP_FILE_NAME = "remote-workers.json.bak"
 REMOTE_WORKER_REGISTRY_GENERATION_FILE_NAME = "remote-workers.generation"
@@ -201,44 +189,42 @@ class WorkerHttpError(RuntimeError):
         super().__init__(f"worker HTTP POST {url} failed with {status_code}: {detail}")
 
 
-def _canonical_dist_name(name: str) -> str:
-    return re.sub(r"[-_.]+", "-", name).lower()
-
-
-def _dist_name_from_requirement(requirement: str) -> str | None:
-    # importlib.metadata exposes optional extras in dist.requires too. Do not
-    # vendor those implicitly: extras often pull in native extensions for the
-    # controller's Python ABI, which can break remote workers running a different
-    # Python minor version.
-    if "extra ==" in requirement or "extra==" in requirement:
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: ANN001, ANN201
         return None
-    match = re.match(r"\s*([A-Za-z0-9_.-]+)", requirement)
-    return match.group(1) if match else None
 
 
-def _add_distribution_to_tar(tar: tarfile.TarFile, dist_name: str, seen: set[str]) -> None:
-    canonical = _canonical_dist_name(dist_name)
-    if canonical in seen:
-        return
-    seen.add(canonical)
+def _post_json_without_environment(
+    url: str,
+    payload: dict[str, Any],
+    headers: dict[str, str],
+    timeout: float,
+) -> None:
+    body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+    request = urllib.request.Request(
+        url,
+        data=body,
+        headers={"Content-Type": "application/json", **headers},
+        method="POST",
+    )
+    opener = urllib.request.build_opener(
+        urllib.request.ProxyHandler({}),
+        _NoRedirectHandler(),
+    )
     try:
-        dist = importlib_metadata.distribution(dist_name)
-    except importlib_metadata.PackageNotFoundError:
-        return
-
-    for requirement in dist.requires or []:
-        required_name = _dist_name_from_requirement(requirement)
-        if required_name:
-            _add_distribution_to_tar(tar, required_name, seen)
-
-    for entry in dist.files or []:
-        entry_path = Path(entry)
-        if entry_path.is_absolute() or ".." in entry_path.parts:
-            continue
-        source = Path(dist.locate_file(entry))
-        if not source.is_file() or source.suffix in {".pyc", ".pyo"}:
-            continue
-        tar.add(source, arcname=str(Path("vendor") / entry_path))
+        with opener.open(request, timeout=timeout) as response:  # noqa: S310
+            status = int(getattr(response, "status", response.getcode()))
+            response_body = response.read().decode("utf-8", errors="replace")
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace").strip()
+        raise RuntimeError(
+            f"Morrows job event POST failed with HTTP {exc.code}: {detail or '<empty response>'}"
+        ) from exc
+    if not 200 <= status < 300:
+        raise RuntimeError(
+            f"Morrows job event POST failed with HTTP {status}: "
+            f"{response_body.strip() or '<empty response>'}"
+        )
 
 
 def _utc() -> float:
@@ -1032,18 +1018,13 @@ class RemoteManager:
             data["completed_at"] = (
                 datetime.fromtimestamp(float(completed_at), UTC).isoformat().replace("+00:00", "Z")
             )
-        async with httpx.AsyncClient(
-            timeout=httpx.Timeout(20.0), follow_redirects=False, trust_env=False
-        ) as client:
-            response = await client.post(
-                settings.morrows_job_event_url,
-                headers={"X-LSM-Control-Key": control_key},
-                json={
-                    "event_id": event["id"],
-                    **data,
-                },
-            )
-            response.raise_for_status()
+        await asyncio.to_thread(
+            _post_json_without_environment,
+            settings.morrows_job_event_url,
+            {"event_id": event["id"], **data},
+            {"X-LSM-Control-Key": control_key},
+            20.0,
+        )
 
     async def dispatch_pending_job_events(
         self, *, event_ids: set[str] | None = None
@@ -1078,7 +1059,7 @@ class RemoteManager:
             if not event.get("morrows_delivered_at"):
                 try:
                     await self._deliver_job_event_to_morrows(event)
-                except (RuntimeError, httpx.HTTPError):
+                except (RuntimeError, urllib.error.URLError, OSError):
                     pass
                 else:
                     self._mark_job_event_consumer_delivered(event_id, "morrows")
@@ -1620,23 +1601,9 @@ def _bearer_token(request: Any) -> str:
 async def worker_bundle(request: Any):  # noqa: ARG001, ANN201
     from starlette.responses import Response
 
-    package_root = Path(__file__).resolve().parent
-    buffer = BytesIO()
-    with tarfile.open(fileobj=buffer, mode="w:gz") as tar:
-        for path in package_root.rglob("*"):
-            if not path.is_file():
-                continue
-            relative = path.relative_to(package_root)
-            is_python = path.suffix == ".py"
-            is_helper = relative.parts[:1] == ("helpers",) and (
-                path.name == "tmux" or path.name == "tmux.LICENSE"
-            )
-            if is_python or is_helper:
-                tar.add(path, arcname=str(path.relative_to(package_root.parent)))
-        seen: set[str] = set()
-        for dist_name in REMOTE_WORKER_DISTRIBUTIONS:
-            _add_distribution_to_tar(tar, dist_name, seen)
-    return Response(buffer.getvalue(), media_type="application/gzip")
+    from .remote_worker_bundle import worker_bundle_artifact
+
+    return Response(worker_bundle_artifact().payload, media_type="application/gzip")
 
 
 async def join_script(request: Any):  # noqa: ARG001, ANN201
@@ -2712,7 +2679,6 @@ def _worker_poll_payload(
 
 
 def _reexec_updated_worker_runtime() -> None:
-    from .remote_worker_cli import _worker_run_exec_argv
     from .remote_worker_service import (
         _current_worker_is_managed,
         _windows_pythonw_executable,
@@ -2720,7 +2686,7 @@ def _reexec_updated_worker_runtime() -> None:
         cancel_worker_lock_reexec,
         prepare_worker_lock_reexec,
     )
-    from .remote_worker_state import worker_runtime_dir
+    from .remote_worker_state import worker_bootstrap_path, worker_runtime_dir
 
     runtime = worker_runtime_dir()
     preferred = [str(runtime), str(runtime / "vendor")]
@@ -2728,7 +2694,8 @@ def _reexec_updated_worker_runtime() -> None:
     os.environ["PYTHONPATH"] = os.pathsep.join(
         preferred + [entry for entry in current if entry not in preferred]
     )
-    argv = _worker_run_exec_argv()
+    bootstrap = worker_bootstrap_path()
+    argv = [sys.executable, str(bootstrap), "worker", "run"]
     if sys.platform == "win32" and _current_worker_is_managed():
         service_launcher = _windows_task_launcher_path()
         if service_launcher.is_file():
@@ -2744,21 +2711,27 @@ def _reexec_updated_worker_runtime() -> None:
 async def _upgrade_worker_runtime(server: str, target_version: str) -> None:
     from .remote_worker_installer import install_or_update_runtime
     from .remote_worker_service import refresh_installed_service_definition
+    from .remote_worker_state import install_launcher, rollback_pending_runtime_upgrade
 
     result = await asyncio.to_thread(install_or_update_runtime, server)
     installed_version = str(result.get("version") or "")
-    if target_version and installed_version != target_version:
-        raise RuntimeError(
-            f"controller requested worker {target_version}, but manifest provides "
-            f"{installed_version or 'no version'}"
+    try:
+        if target_version and installed_version != target_version:
+            raise RuntimeError(
+                f"controller requested worker {target_version}, but manifest provides "
+                f"{installed_version or 'no version'}"
+            )
+        await asyncio.to_thread(install_launcher)
+        await asyncio.to_thread(refresh_installed_service_definition)
+        print(
+            f"Status: worker runtime updated to {installed_version or 'unknown'}; restarting...",
+            file=sys.stderr,
+            flush=True,
         )
-    await asyncio.to_thread(refresh_installed_service_definition)
-    print(
-        f"Status: worker runtime updated to {installed_version or 'unknown'}; restarting...",
-        file=sys.stderr,
-        flush=True,
-    )
-    _reexec_updated_worker_runtime()
+        _reexec_updated_worker_runtime()
+    except BaseException:
+        await asyncio.to_thread(rollback_pending_runtime_upgrade)
+        raise
 
 
 def _parse_worker_http_json(url: str, status_code: int, response_body: str) -> dict[str, Any]:
@@ -3421,6 +3394,9 @@ async def _run_worker_locked(
             raise RuntimeError(body.get("message") or body)
         data = body["data"]
         machine_name = data["name"]
+    from .remote_worker_state import commit_runtime_upgrade
+
+    await asyncio.to_thread(commit_runtime_upgrade)
     heartbeat_interval_s = float(data.get("heartbeat_interval_s") or _remote_heartbeat_interval_s())
     poll_request_timeout_s = _worker_poll_request_timeout_s(data)
     controller_poll_protocol_version = _worker_poll_protocol_version(data)

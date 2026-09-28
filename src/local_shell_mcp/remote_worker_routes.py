@@ -1,58 +1,22 @@
 from __future__ import annotations
 
 import functools
-import gzip
 import hashlib
-import io
 import shlex
-import tarfile
-from pathlib import Path
 from typing import Any
 
 from . import __version__, remote
 from .remote_transfer import remote_transfer_routes
+from .remote_worker_bundle import worker_bundle_artifact
 from .settings import get_settings
 
 REMOTE_WORKER_MANIFEST_PATH = "/remote/worker-manifest.json"
 REMOTE_WORKER_PUBLIC_MANIFEST_URL = remote.REMOTE_WORKER_BUNDLE_PATH + "?manifest=1"
 
 
-def _normalized_tar_info(info: tarfile.TarInfo) -> tarfile.TarInfo:
-    info.uid = 0
-    info.gid = 0
-    info.uname = ""
-    info.gname = ""
-    info.mtime = 0
-    return info
-
-
 @functools.lru_cache(maxsize=1)
 def worker_bundle_bytes() -> bytes:
-    package_root = Path(remote.__file__).resolve().parent
-    buffer = io.BytesIO()
-    with (
-        gzip.GzipFile(fileobj=buffer, mode="wb", filename="", mtime=0) as compressed,
-        tarfile.open(fileobj=compressed, mode="w") as tar,
-    ):
-        for path in sorted(package_root.rglob("*")):
-            if not path.is_file():
-                continue
-            relative = path.relative_to(package_root)
-            is_python = path.suffix == ".py"
-            is_helper = relative.parts[:1] == ("helpers",) and path.name in {
-                "tmux",
-                "tmux.LICENSE",
-            }
-            if is_python or is_helper:
-                tar.add(
-                    path,
-                    arcname=str(path.relative_to(package_root.parent)),
-                    filter=_normalized_tar_info,
-                )
-        seen: set[str] = set()
-        for dist_name in remote.REMOTE_WORKER_DISTRIBUTIONS:
-            remote._add_distribution_to_tar(tar, dist_name, seen)  # noqa: SLF001
-    return buffer.getvalue()
+    return worker_bundle_artifact().payload
 
 
 def _worker_manifest_data() -> dict[str, Any]:
@@ -61,8 +25,9 @@ def _worker_manifest_data() -> dict[str, Any]:
     payload = worker_bundle_bytes()
     digest = hashlib.sha256(payload).hexdigest()
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "bundle_version": __version__,
+        "vendored_distributions": list(worker_bundle_artifact().distributions),
         "sha256": digest,
         "size": len(payload),
         "url": server + remote.REMOTE_WORKER_BUNDLE_PATH + f"?sha256={digest}",

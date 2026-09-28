@@ -3,7 +3,9 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import os
 import subprocess
+import sys
 import tarfile
 from types import SimpleNamespace
 
@@ -27,6 +29,7 @@ def _configure(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("LOCAL_SHELL_MCP_WORKER_STATE_DIR", str(tmp_path / "state"))
     state.write_worker_config(server="https://example.test", name="worker", workdir=str(tmp_path))
+    monkeypatch.setattr(installer, "verify_extracted_worker_runtime", lambda runtime: None)
 
 
 def test_install_update_and_cache_runtime(tmp_path, monkeypatch):
@@ -160,6 +163,128 @@ def test_install_without_existing_config_rejects_incomplete_bundle(tmp_path, mon
     monkeypatch.setattr(installer, "_fetch_bytes", lambda *args, **kwargs: payload)
     with pytest.raises(ValueError, match="does not contain local_shell_mcp"):
         installer.install_or_update_runtime("https://s")
+
+
+def test_failed_candidate_self_test_leaves_runtime_and_metadata_untouched(tmp_path, monkeypatch):
+    _configure(tmp_path, monkeypatch)
+    runtime = state.worker_runtime_dir()
+    (runtime / "local_shell_mcp").mkdir(parents=True)
+    (runtime / "local_shell_mcp" / "current.py").write_text("old = True\n", encoding="utf-8")
+    state.update_runtime_metadata("old-digest", "old-version")
+    payload = _bundle()
+    digest = hashlib.sha256(payload).hexdigest()
+    monkeypatch.setattr(
+        installer,
+        "fetch_manifest",
+        lambda server: {
+            "schema_version": 2,
+            "sha256": digest,
+            "bundle_version": "new-version",
+            "url": "https://example.test/bundle.tgz",
+        },
+    )
+    monkeypatch.setattr(installer, "_fetch_bytes", lambda *args, **kwargs: payload)
+
+    def reject(runtime):
+        raise RuntimeError("isolated candidate failed")
+
+    monkeypatch.setattr(installer, "verify_extracted_worker_runtime", reject)
+    with pytest.raises(RuntimeError, match="isolated candidate failed"):
+        installer.install_or_update_runtime("https://example.test")
+
+    assert (runtime / "local_shell_mcp" / "current.py").exists()
+    assert state.read_worker_config()["runtime_digest"] == "old-digest"
+    assert not state.worker_previous_runtime_dir().exists()
+    assert not state.worker_pending_upgrade_path().exists()
+
+
+def test_runtime_activation_keeps_previous_and_pending_marker(tmp_path, monkeypatch):
+    _configure(tmp_path, monkeypatch)
+    runtime = state.worker_runtime_dir()
+    (runtime / "local_shell_mcp").mkdir(parents=True)
+    (runtime / "local_shell_mcp" / "current.py").write_text("old = True\n", encoding="utf-8")
+    state.update_runtime_metadata("old-digest", "old-version")
+    payload = _bundle()
+    digest = hashlib.sha256(payload).hexdigest()
+    monkeypatch.setattr(
+        installer,
+        "fetch_manifest",
+        lambda server: {
+            "schema_version": 2,
+            "sha256": digest,
+            "bundle_version": "new-version",
+            "url": "https://example.test/bundle.tgz",
+        },
+    )
+    monkeypatch.setattr(installer, "_fetch_bytes", lambda *args, **kwargs: payload)
+
+    installer.install_or_update_runtime("https://example.test")
+
+    assert (runtime / "local_shell_mcp" / "example.py").exists()
+    assert (state.worker_previous_runtime_dir() / "local_shell_mcp" / "current.py").exists()
+    marker = json.loads(state.worker_pending_upgrade_path().read_text(encoding="utf-8"))
+    assert marker["old_digest"] == "old-digest"
+    assert marker["new_digest"] == digest
+    assert marker["old_version"] == "old-version"
+    assert marker["new_version"] == "new-version"
+    assert marker["launch_attempted_at"] is None
+    assert state.read_worker_config()["runtime_digest"] == digest
+
+
+def test_service_restart_rolls_back_pending_candidate_before_import(tmp_path, monkeypatch):
+    _configure(tmp_path, monkeypatch)
+    runtime = state.worker_runtime_dir()
+    package = runtime / "local_shell_mcp"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    (package / "main.py").write_text(
+        "def main(argv):\n    print('old-runtime-started')\n",
+        encoding="utf-8",
+    )
+    state.update_runtime_metadata("old-digest", "old-version")
+
+    payload_buffer = io.BytesIO()
+    with tarfile.open(fileobj=payload_buffer, mode="w:gz") as archive:
+        for name, content in {
+            "local_shell_mcp/__init__.py": b"",
+            "local_shell_mcp/main.py": b"raise RuntimeError('candidate imported')\n",
+        }.items():
+            info = tarfile.TarInfo(name)
+            info.size = len(content)
+            archive.addfile(info, io.BytesIO(content))
+    payload = payload_buffer.getvalue()
+    digest = hashlib.sha256(payload).hexdigest()
+    monkeypatch.setattr(
+        installer,
+        "fetch_manifest",
+        lambda server: {
+            "schema_version": 2,
+            "sha256": digest,
+            "bundle_version": "new-version",
+            "url": "https://example.test/bundle.tgz",
+        },
+    )
+    monkeypatch.setattr(installer, "_fetch_bytes", lambda *args, **kwargs: payload)
+    installer.install_or_update_runtime("https://example.test")
+    marker_path = state.worker_pending_upgrade_path()
+    marker = json.loads(marker_path.read_text(encoding="utf-8"))
+    marker["launch_attempted_at"] = 1.0
+    marker_path.write_text(json.dumps(marker), encoding="utf-8")
+    state.install_launcher()
+
+    completed = subprocess.run(
+        [sys.executable, str(state.worker_bootstrap_path()), "worker", "run"],
+        check=False,
+        capture_output=True,
+        text=True,
+        env={**os.environ, "LOCAL_SHELL_MCP_WORKER_STATE_DIR": str(tmp_path / "state")},
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout.strip() == "old-runtime-started"
+    assert state.read_worker_config()["runtime_digest"] == "old-digest"
+    assert not marker_path.exists()
+    assert not state.worker_previous_runtime_dir().exists()
 
 
 

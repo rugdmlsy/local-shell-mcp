@@ -86,6 +86,8 @@ async def test_run_worker_overrides_stale_scope(tmp_path, monkeypatch):
     monkeypatch.setattr(cli.remote, "worker_info", lambda workdir: {})
     monkeypatch.setattr(cli.remote, "_read_worker_identity", lambda server, name=None: None)
     monkeypatch.setattr(cli.remote, "_write_worker_identity", lambda data: None)
+    committed = []
+    monkeypatch.setattr(state, "commit_runtime_upgrade", lambda: committed.append(True))
     calls = 0
     poll_payloads = []
 
@@ -107,6 +109,7 @@ async def test_run_worker_overrides_stale_scope(tmp_path, monkeypatch):
 
     assert len(poll_payloads) == 1
     assert "lane" not in poll_payloads[0]
+    assert committed == [True]
 
 
 @pytest.mark.asyncio
@@ -172,11 +175,13 @@ async def test_run_worker_reports_version_and_applies_poll_upgrade(tmp_path, mon
 @pytest.mark.asyncio
 async def test_run_worker_transfer_does_not_block_interactive_jobs(tmp_path, monkeypatch):
     monkeypatch.setenv("LOCAL_SHELL_MCP_WORKSPACE_ROOT", str(tmp_path))
+    monkeypatch.setenv("LOCAL_SHELL_MCP_WORKER_STATE_DIR", str(tmp_path / "worker-state"))
     monkeypatch.setenv("LOCAL_SHELL_MCP_ALLOW_FULL_CONTAINER", "false")
     monkeypatch.setattr(cli.remote, "worker_capabilities", lambda: [])
     monkeypatch.setattr(cli.remote, "worker_info", lambda workdir: {})
     monkeypatch.setattr(cli.remote, "_read_worker_identity", lambda server, name=None: None)
     monkeypatch.setattr(cli.remote, "_write_worker_identity", lambda data: None)
+    monkeypatch.setattr(state, "commit_runtime_upgrade", lambda: False)
 
     # This test may run on a host that is itself an active LSM worker. The
     # single-instance lock is orthogonal to lane isolation, so avoid coupling

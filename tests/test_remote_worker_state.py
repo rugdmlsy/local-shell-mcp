@@ -56,7 +56,10 @@ def test_install_launcher_and_path_configuration_are_idempotent(tmp_path, monkey
     script = launcher.read_text(encoding="utf-8")
     assert str(state.worker_state_dir().resolve()) in script
     assert str(Path(sys.executable).resolve()) in script
-    assert "-m local_shell_mcp.main" in script
+    assert str(state.worker_bootstrap_path()) in script
+    bootstrap = state.worker_bootstrap_path().read_text(encoding="utf-8")
+    assert "launch_attempted_at" in bootstrap
+    assert "from local_shell_mcp.main import main" in bootstrap
     if os.name != "nt":
         assert stat.S_IMODE(launcher.stat().st_mode) == 0o755
 

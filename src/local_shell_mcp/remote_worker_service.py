@@ -23,6 +23,7 @@ from .remote_worker_state import (
     ensure_user_bin_on_path,
     install_launcher,
     user_home,
+    worker_bootstrap_path,
     worker_launcher_path,
     worker_lock_path,
     worker_log_path,
@@ -353,39 +354,28 @@ def _write_launchd_plist(launcher: Path | None = None) -> Path:
 def _write_windows_task_launcher() -> Path:
     path = _windows_task_launcher_path()
     state_dir = str(worker_state_dir().resolve())
-    runtime_dir = str(worker_runtime_dir().resolve())
-    vendor_dir = str((worker_runtime_dir() / "vendor").resolve())
+    bootstrap_path = str(worker_bootstrap_path().resolve())
     log_path = str(worker_log_path().resolve())
     content = f'''from __future__ import annotations
 
 import os
+import runpy
 import sys
 import traceback
 
 STATE_DIR = {state_dir!r}
-RUNTIME_DIR = {runtime_dir!r}
-VENDOR_DIR = {vendor_dir!r}
+BOOTSTRAP_PATH = {bootstrap_path!r}
 LOG_PATH = {log_path!r}
 
 os.environ["PYTHONUNBUFFERED"] = "1"
 os.environ[{_WORKER_MANAGED_ENV!r}] = "1"
 os.environ["LOCAL_SHELL_MCP_WORKER_STATE_DIR"] = STATE_DIR
-existing_pythonpath = os.environ.get("PYTHONPATH")
-runtime_pythonpath = os.pathsep.join((RUNTIME_DIR, VENDOR_DIR))
-os.environ["PYTHONPATH"] = (
-    runtime_pythonpath
-    if not existing_pythonpath
-    else runtime_pythonpath + os.pathsep + existing_pythonpath
-)
-sys.path[:0] = [RUNTIME_DIR, VENDOR_DIR]
-
 with open(LOG_PATH, "a", encoding="utf-8", buffering=1) as worker_log:
     sys.stdout = worker_log
     sys.stderr = worker_log
     try:
-        from local_shell_mcp.main import main
-
-        main(["worker", "run"])
+        sys.argv = [BOOTSTRAP_PATH, "worker", "run"]
+        runpy.run_path(BOOTSTRAP_PATH, run_name="__main__")
     except BaseException:
         traceback.print_exc()
         raise

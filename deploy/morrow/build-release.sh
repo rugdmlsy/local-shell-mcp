@@ -91,6 +91,7 @@ stage_dir=""
   "${uv_bin}" lock --check
   "${uv_bin}" sync --frozen
   .venv/bin/local-shell-mcp --version
+  .venv/bin/python -c 'from local_shell_mcp.remote_worker_bundle import verify_worker_bundle; verify_worker_bundle()'
   .venv/bin/python - "${tag}" "${expected_sha}" > release-manifest.json <<'PY'
 import hashlib
 import json

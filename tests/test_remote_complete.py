@@ -15,6 +15,7 @@ from starlette.applications import Starlette
 from starlette.testclient import TestClient
 
 import local_shell_mcp.remote as remote
+from local_shell_mcp import remote_worker_bundle
 from local_shell_mcp.auth import AuthMiddleware
 from local_shell_mcp.errors import ShellExecutableNotFoundError
 from local_shell_mcp.models import CommandResult
@@ -52,42 +53,10 @@ def _result() -> CommandResult:
 
 def test_distribution_helpers_and_worker_bundle(tmp_path, monkeypatch):
     _configure(tmp_path, monkeypatch)
-    assert remote._canonical_dist_name("My_Pkg.Name") == "my-pkg-name"
-    assert remote._dist_name_from_requirement("pkg-name>=1") == "pkg-name"
-    assert remote._dist_name_from_requirement("extra; extra == 'x'") is None
-    assert remote._dist_name_from_requirement(" !!!") is None
-
-    package_file = tmp_path / "module.py"
-    package_file.write_text("x = 1\n", encoding="utf-8")
-    bytecode = tmp_path / "module.pyc"
-    bytecode.write_bytes(b"ignored")
-    unsafe = Path("../unsafe.py")
-
-    class FakeDist:
-        requires = ["dependency>=1", "optional; extra == 'feature'"]
-        files = [Path("module.py"), Path("module.pyc"), unsafe]
-
-        def locate_file(self, entry):
-            return tmp_path / entry
-
-    calls = []
-
-    def distribution(name):
-        calls.append(name)
-        if name == "missing":
-            raise remote.importlib_metadata.PackageNotFoundError(name)
-        return FakeDist()
-
-    monkeypatch.setattr(remote.importlib_metadata, "distribution", distribution)
-    buffer = io.BytesIO()
-    with tarfile.open(fileobj=buffer, mode="w:gz") as tar:
-        remote._add_distribution_to_tar(tar, "root", set())
-        remote._add_distribution_to_tar(tar, "missing", set())
-    with tarfile.open(fileobj=io.BytesIO(buffer.getvalue()), mode="r:gz") as tar:
-        names = tar.getnames()
-    assert "vendor/module.py" in names
-    assert all(not name.endswith(".pyc") for name in names)
-    assert "dependency" in calls
+    assert remote_worker_bundle._canonical_dist_name("My_Pkg.Name") == "my-pkg-name"  # noqa: SLF001
+    assert remote_worker_bundle._dist_name_from_requirement("pkg-name>=1") == "pkg-name"  # noqa: SLF001
+    assert remote_worker_bundle._dist_name_from_requirement("extra; extra == 'x'") is None  # noqa: SLF001
+    assert remote_worker_bundle._dist_name_from_requirement(" !!!") is None  # noqa: SLF001
 
     response = asyncio.run(remote.worker_bundle(None))
     assert response.media_type == "application/gzip"

@@ -9,6 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from local_shell_mcp import remote_worker_bundle as bundle_builder
 from local_shell_mcp import remote_worker_routes as routes
 from local_shell_mcp.settings import get_settings
 
@@ -27,6 +28,8 @@ async def test_worker_bundle_and_manifest_are_stable(tmp_path, monkeypatch):
     response = await routes.worker_manifest(None)  # type: ignore[arg-type]
     data = json.loads(response.body)
     assert data["sha256"] == hashlib.sha256(first).hexdigest()
+    assert data["schema_version"] == 2
+    assert data["vendored_distributions"] == []
     assert data["url"] == (
         "https://example.test/remote/worker-bundle.tgz?sha256=" + data["sha256"]
     )
@@ -156,3 +159,124 @@ assert "zstandard" not in sys.modules
         cwd=tmp_path,
     )
     assert completed.returncode == 0, completed.stderr
+
+
+def test_iterative_bundle_discovery_maps_missing_module_and_recursive_dependencies(
+    monkeypatch,
+):
+    class FakeDistribution:
+        files = []
+
+        def __init__(self, name, requires=()):
+            self.metadata = {"Name": name}
+            self.requires = list(requires)
+
+        def locate_file(self, entry):  # pragma: no cover - no files in this fixture
+            raise AssertionError(entry)
+
+    distributions = {
+        "synthetic-dist": FakeDistribution("synthetic-dist", ["synthetic-child>=1"]),
+        "synthetic-child": FakeDistribution("synthetic-child"),
+    }
+    attempts = []
+
+    def run_self_test(runtime):
+        attempts.append(runtime)
+        if len(attempts) == 1:
+            return subprocess.CompletedProcess(
+                [],
+                1,
+                stdout="",
+                stderr="ModuleNotFoundError: No module named 'synthetic_import'",
+            )
+        return subprocess.CompletedProcess([], 0, stdout="", stderr="")
+
+    monkeypatch.setattr(
+        bundle_builder.importlib_metadata,
+        "packages_distributions",
+        lambda: {"synthetic_import": ["synthetic-dist"]},
+    )
+    monkeypatch.setattr(
+        bundle_builder.importlib_metadata,
+        "distribution",
+        lambda name: distributions[name],
+    )
+    monkeypatch.setattr(bundle_builder, "_run_isolated_worker_self_test", run_self_test)
+    bundle_builder.worker_bundle_artifact.cache_clear()
+    try:
+        artifact = bundle_builder.worker_bundle_artifact()
+    finally:
+        bundle_builder.worker_bundle_artifact.cache_clear()
+
+    assert artifact.distributions == ("synthetic-child", "synthetic-dist")
+    assert len(attempts) == 2
+
+
+def test_bundle_dependency_discovery_rejects_native_extensions(monkeypatch):
+    class NativeDistribution:
+        metadata = {"Name": "unsafe-native"}
+        requires = []
+        files = [bundle_builder.Path("unsafe_native/module.so")]
+
+    monkeypatch.setattr(
+        bundle_builder.importlib_metadata,
+        "distribution",
+        lambda name: NativeDistribution(),
+    )
+    with pytest.raises(RuntimeError, match="native extension"):
+        bundle_builder._resolve_distribution_closure({"unsafe-native"})  # noqa: SLF001
+
+
+def test_real_worker_bundle_passes_isolated_startup_without_controller_site_packages():
+    bundle_builder.worker_bundle_artifact.cache_clear()
+    result = bundle_builder.verify_worker_bundle()
+    assert result["vendored_distributions"] == []
+
+
+def test_static_startup_graph_includes_platform_branches_but_skips_optional_imports(tmp_path):
+    package = tmp_path / "local_shell_mcp"
+    package.mkdir()
+    (package / "remote_worker_cli.py").write_text(
+        """
+import sys
+from . import required_local
+
+if sys.platform == "darwin":
+    import mac_only_dependency
+
+try:
+    import optional_dependency
+except ImportError:
+    optional_dependency = None
+
+def capability():
+    import capability_only_dependency
+""",
+        encoding="utf-8",
+    )
+    (package / "required_local.py").write_text(
+        """
+if True:
+    import shared_startup_dependency
+""",
+        encoding="utf-8",
+    )
+
+    assert bundle_builder._worker_startup_external_modules(package) == {  # noqa: SLF001
+        "mac_only_dependency",
+        "shared_startup_dependency",
+    }
+
+
+def test_static_startup_distribution_roots_map_external_modules(monkeypatch):
+    monkeypatch.setattr(
+        bundle_builder,
+        "_worker_startup_external_modules",
+        lambda: {"synthetic_import"},
+    )
+    monkeypatch.setattr(
+        bundle_builder.importlib_metadata,
+        "packages_distributions",
+        lambda: {"synthetic_import": ["synthetic-dist"]},
+    )
+    assert bundle_builder._startup_distribution_roots() == {"synthetic-dist"}  # noqa: SLF001

@@ -15,11 +15,17 @@ from pathlib import Path
 from typing import Any
 
 from . import __version__
+from .remote_worker_bundle import verify_extracted_worker_runtime
 from .remote_worker_state import (
     read_worker_config,
     update_runtime_metadata,
+    worker_config_path,
+    worker_pending_upgrade_path,
+    worker_previous_config_path,
+    worker_previous_runtime_dir,
     worker_runtime_dir,
     worker_state_dir,
+    write_pending_upgrade_marker,
 )
 
 _WORKER_MANIFEST_PATH = "/remote/worker-bundle.tgz?manifest=1"
@@ -119,7 +125,7 @@ def _fetch_bytes(url: str, timeout: float = 60) -> bytes:
 def fetch_manifest(server: str) -> dict[str, Any]:
     url = server.rstrip("/") + _WORKER_MANIFEST_PATH
     data = json.loads(_fetch_bytes(url).decode("utf-8"))
-    if not isinstance(data, dict) or data.get("schema_version") != 1:
+    if not isinstance(data, dict) or data.get("schema_version") not in {1, 2}:
         raise ValueError("invalid remote worker manifest")
     digest = str(data.get("sha256") or "")
     bundle_url = str(data.get("url") or "")
@@ -169,24 +175,48 @@ def install_or_update_runtime(server: str, *, force: bool = False) -> dict[str, 
         _safe_extract(archive, extracted)
         if not (extracted / "local_shell_mcp").is_dir():
             raise ValueError("worker bundle does not contain local_shell_mcp")
+        verify_extracted_worker_runtime(extracted)
 
         staged = state_dir / f"runtime.next.{os.getpid()}"
-        backup = state_dir / f"runtime.previous.{os.getpid()}"
+        previous = worker_previous_runtime_dir()
+        pending = worker_pending_upgrade_path()
+        previous_config = worker_previous_config_path()
+        had_runtime = runtime.exists()
+        if pending.exists():
+            raise RuntimeError(
+                f"cannot activate another worker runtime while an upgrade is pending: {pending}"
+            )
         shutil.rmtree(staged, ignore_errors=True)
-        shutil.rmtree(backup, ignore_errors=True)
+        if previous.exists():
+            shutil.rmtree(previous)
+        previous_config.unlink(missing_ok=True)
         shutil.copytree(extracted, staged)
+        if had_runtime and worker_config_path().exists():
+            shutil.copy2(worker_config_path(), previous_config)
         try:
-            if runtime.exists():
-                runtime.replace(backup)
+            if had_runtime:
+                runtime.replace(previous)
             staged.replace(runtime)
+            if current:
+                update_runtime_metadata(digest, version)
+            if had_runtime:
+                write_pending_upgrade_marker(
+                    old_digest=str(current.get("runtime_digest") or ""),
+                    old_version=str(current.get("runtime_version") or ""),
+                    new_digest=digest,
+                    new_version=version,
+                )
         except Exception:
-            if not runtime.exists() and backup.exists():
-                backup.replace(runtime)
+            pending.unlink(missing_ok=True)
+            if had_runtime and previous.exists():
+                if runtime.exists():
+                    shutil.rmtree(runtime)
+                previous.replace(runtime)
+            if previous_config.exists():
+                previous_config.replace(worker_config_path())
             raise
         finally:
             shutil.rmtree(staged, ignore_errors=True)
-            shutil.rmtree(backup, ignore_errors=True)
-
-    if current:
-        update_runtime_metadata(digest, version)
+            if not had_runtime:
+                previous_config.unlink(missing_ok=True)
     return {"updated": True, "sha256": digest, "version": version, "runtime": str(runtime)}

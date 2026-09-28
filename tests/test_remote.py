@@ -669,17 +669,12 @@ def test_worker_retry_delay_is_capped():
 
 
 def test_reexec_updated_worker_runtime_prefers_installed_bundle(tmp_path, monkeypatch):
-    from local_shell_mcp import remote_worker_cli, remote_worker_service
+    from local_shell_mcp import remote_worker_service, remote_worker_state
 
     state_dir = tmp_path / "state"
     runtime = state_dir / "runtime"
     monkeypatch.setenv("LOCAL_SHELL_MCP_WORKER_STATE_DIR", str(state_dir))
     monkeypatch.setenv("PYTHONPATH", remote.os.pathsep.join(("/old/runtime", "/other")))
-    monkeypatch.setattr(
-        remote_worker_cli,
-        "_worker_run_exec_argv",
-        lambda: [sys.executable, "-m", "local_shell_mcp.main", "worker", "run"],
-    )
     monkeypatch.setattr(remote_worker_service, "_current_worker_is_managed", lambda: False)
     calls = []
     monkeypatch.setattr(remote.os, "execv", lambda executable, argv: calls.append((executable, argv)))
@@ -692,13 +687,13 @@ def test_reexec_updated_worker_runtime_prefers_installed_bundle(tmp_path, monkey
     assert calls == [
         (
             sys.executable,
-            [sys.executable, "-m", "local_shell_mcp.main", "worker", "run"],
+            [sys.executable, str(remote_worker_state.worker_bootstrap_path()), "worker", "run"],
         )
     ]
 
 
 def test_reexec_updated_managed_windows_worker_uses_service_launcher(tmp_path, monkeypatch):
-    from local_shell_mcp import remote_worker_cli, remote_worker_service
+    from local_shell_mcp import remote_worker_service
 
     state_dir = tmp_path / "state"
     launcher = state_dir / "worker-service.pyw"
@@ -708,11 +703,6 @@ def test_reexec_updated_managed_windows_worker_uses_service_launcher(tmp_path, m
     pythonw.write_bytes(b"")
     monkeypatch.setenv("LOCAL_SHELL_MCP_WORKER_STATE_DIR", str(state_dir))
     monkeypatch.setattr(remote.sys, "platform", "win32")
-    monkeypatch.setattr(
-        remote_worker_cli,
-        "_worker_run_exec_argv",
-        lambda: [sys.executable, "-m", "local_shell_mcp.main", "worker", "run"],
-    )
     monkeypatch.setattr(remote_worker_service, "_current_worker_is_managed", lambda: True)
     monkeypatch.setattr(remote_worker_service, "_windows_pythonw_executable", lambda: pythonw)
     calls = []
@@ -725,7 +715,9 @@ def test_reexec_updated_managed_windows_worker_uses_service_launcher(tmp_path, m
 
 @pytest.mark.asyncio
 async def test_upgrade_worker_runtime_validates_manifest_version(monkeypatch):
-    from local_shell_mcp import remote_worker_installer, remote_worker_service
+    from local_shell_mcp import remote_worker_installer, remote_worker_service, remote_worker_state
+
+    monkeypatch.setattr(remote_worker_state, "rollback_pending_runtime_upgrade", lambda: False)
 
     monkeypatch.setattr(
         remote_worker_installer,
@@ -756,9 +748,10 @@ async def test_upgrade_worker_runtime_validates_manifest_version(monkeypatch):
         "refresh_installed_service_definition",
         lambda: calls.append("refresh"),
     )
+    monkeypatch.setattr(remote_worker_state, "install_launcher", lambda: calls.append("install"))
     monkeypatch.setattr(remote, "_reexec_updated_worker_runtime", lambda: calls.append("reexec"))
     await remote._upgrade_worker_runtime("https://example.test", "3.2.0")  # noqa: SLF001
-    assert calls == ["refresh", "reexec"]
+    assert calls == ["install", "refresh", "reexec"]
 
 
 def test_worker_cli_keyboard_interrupt_exits_cleanly():
@@ -1043,3 +1036,46 @@ def test_remote_cancelled_job_tombstones_are_pruned_and_bounded(tmp_path, monkey
     assert "new-job" in manager.cancelled_jobs
     assert all(not job_id.startswith("old-") for job_id in manager.cancelled_jobs)
     assert len(manager.cancelled_jobs) <= 64
+
+
+@pytest.mark.asyncio
+async def test_upgrade_worker_runtime_rolls_back_if_post_activation_setup_fails(monkeypatch):
+    from local_shell_mcp import remote_worker_installer, remote_worker_service, remote_worker_state
+
+    calls = []
+    monkeypatch.setattr(
+        remote_worker_installer,
+        "install_or_update_runtime",
+        lambda server: calls.append("activate")
+        or {"updated": True, "version": "3.2.0", "sha256": "new"},
+    )
+    monkeypatch.setattr(
+        remote_worker_state,
+        "install_launcher",
+        lambda: calls.append("install-launcher"),
+    )
+
+    def fail_refresh():
+        calls.append("refresh")
+        raise RuntimeError("service refresh failed")
+
+    monkeypatch.setattr(
+        remote_worker_service,
+        "refresh_installed_service_definition",
+        fail_refresh,
+    )
+    monkeypatch.setattr(
+        remote_worker_state,
+        "rollback_pending_runtime_upgrade",
+        lambda: calls.append("rollback") or True,
+    )
+    monkeypatch.setattr(
+        remote,
+        "_reexec_updated_worker_runtime",
+        lambda: pytest.fail("must not reexec after failed service refresh"),
+    )
+
+    with pytest.raises(RuntimeError, match="service refresh failed"):
+        await remote._upgrade_worker_runtime("https://example.test", "3.2.0")  # noqa: SLF001
+
+    assert calls == ["activate", "install-launcher", "refresh", "rollback"]

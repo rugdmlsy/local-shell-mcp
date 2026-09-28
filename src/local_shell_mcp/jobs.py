@@ -46,6 +46,7 @@ MANAGED_JOB_STORE_RETRY_ATTEMPTS = 2
 MANAGED_DEFERRED_UPDATE_VERSION = 1
 MANAGED_DEFERRED_APPLIED_KEY = "managed_deferred_update_ids"
 TERMINAL_STATUSES = {"succeeded", "failed", "exited", "stopped", "lost"}
+TERMINAL_EVENT_DELIVERY_VERSION = 1
 _JOB_STORE_THREAD_LOCK = threading.RLock()
 _ACTIVE_JOB_OPERATIONS: set[str] = set()
 _MANAGED_DEFERRED_SEQUENCE = itertools.count()
@@ -1103,6 +1104,7 @@ async def start_managed_job(
         "log_truncated": False,
         "output_bytes": 0,
         "attempts": 1,
+        "terminal_event_delivery_version": TERMINAL_EVENT_DELIVERY_VERSION,
     }
     try:
         with _store_transaction() as store:
@@ -1154,6 +1156,7 @@ async def start_job(
         "notify_title": notify_title,
         "notify_summary_path": notify_summary_path,
         "notify_delivery_version": 1,
+        "terminal_event_delivery_version": TERMINAL_EVENT_DELIVERY_VERSION,
     }
     operation_id = _begin_job_operation(job, "start")
     try:
@@ -1419,6 +1422,11 @@ async def collect_pending_job_events() -> list[dict[str, Any]]:
         for job in jobs:
             if job.get("status") not in TERMINAL_STATUSES:
                 continue
+            if (
+                int(job.get("terminal_event_delivery_version") or 0)
+                != TERMINAL_EVENT_DELIVERY_VERSION
+            ):
+                continue
             if job.get("terminal_event_uploaded_at"):
                 continue
             events.append(_job_terminal_event(job, now))
@@ -1568,6 +1576,7 @@ async def _retry_managed_job(
         job.pop("terminal_event_id", None)
         job.pop("terminal_event_uploaded_at", None)
         job["notify_delivery_version"] = 1
+        job["terminal_event_delivery_version"] = TERMINAL_EVENT_DELIVERY_VERSION
         job.update(
             {
                 "status": "running",
@@ -1712,6 +1721,7 @@ async def retry_job(
             job.pop("terminal_event_id", None)
             job.pop("terminal_event_uploaded_at", None)
             job["notify_delivery_version"] = 1
+            job["terminal_event_delivery_version"] = TERMINAL_EVENT_DELIVERY_VERSION
             job.update(
                 {
                     "status": "retrying",

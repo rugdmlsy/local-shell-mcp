@@ -141,7 +141,7 @@ def test_install_and_manage_windows_scheduled_task(tmp_path, monkeypatch):
     launcher_text = service_file.read_text(encoding="utf-8")
     assert "os.environ['LOCAL_SHELL_MCP_WORKER_MANAGED'] = \"1\"" in launcher_text
     assert 'os.environ["LOCAL_SHELL_MCP_WORKER_STATE_DIR"] = STATE_DIR' in launcher_text
-    assert 'main(["worker", "run"])' in launcher_text
+    assert 'runpy.run_path(BOOTSTRAP_PATH, run_name="__main__")' in launcher_text
     assert 'open(LOG_PATH, "a", encoding="utf-8", buffering=1)' in launcher_text
     registration = next(script for script, _ in scripts if "Register-ScheduledTask" in script)
     assert "New-ScheduledTaskTrigger -AtLogOn -User $user" in registration
@@ -216,7 +216,7 @@ def test_windows_service_refresh_and_process_fallback(tmp_path, monkeypatch):
     refreshed = service.refresh_installed_service_definition()
     assert refreshed == service._windows_task_launcher_path()  # noqa: SLF001
     assert refreshed.exists()
-    assert 'main(["worker", "run"])' in refreshed.read_text(encoding="utf-8")
+    assert 'runpy.run_path(BOOTSTRAP_PATH, run_name="__main__")' in refreshed.read_text(encoding="utf-8")
     assert registrations == [refreshed]
 
     monkeypatch.setattr(service, "_windows_task_status", lambda: None)

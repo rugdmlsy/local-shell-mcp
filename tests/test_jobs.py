@@ -1584,3 +1584,49 @@ async def test_terminal_job_event_is_independent_of_mobile_opt_in_and_carries_re
 
     assert mark_job_event_uploaded(event["id"]) is True
     assert await collect_pending_job_events() == []
+
+    retried = await retry_job(started["job_id"])
+    with jobs_module._store_transaction() as store:
+        row = jobs_module._find_job(store, started["job_id"])
+        sessions.discard(str(row.get("session_id") or ""))
+        row["status"] = "succeeded"
+        row["updated_at"] = 30.0
+        row["completed_at"] = 30.0
+        row["exit_code"] = 0
+    retried_events = await collect_pending_job_events()
+    assert retried["attempts"] == 2
+    assert len(retried_events) == 1
+    assert retried_events[0]["data"]["attempt"] == 2
+
+
+@pytest.mark.asyncio
+async def test_historical_terminal_job_without_event_version_is_not_replayed(
+    tmp_path, monkeypatch
+):
+    state_dir = tmp_path / ".state"
+    state_dir.mkdir(parents=True)
+    monkeypatch.setenv("LOCAL_SHELL_MCP_WORKSPACE_ROOT", str(tmp_path))
+    monkeypatch.setenv("LOCAL_SHELL_MCP_STATE_DIR", str(state_dir))
+    get_settings.cache_clear()
+    row = {
+        "job_id": "historical-terminal",
+        "name": "Historical terminal",
+        "status": "succeeded",
+        "command": "true",
+        "cwd": ".",
+        "created_at": 1.0,
+        "updated_at": 2.0,
+        "completed_at": 2.0,
+        "exit_code": 0,
+        "attempts": 1,
+        "notify_on_finish": True,
+        "notify_delivery_version": 1,
+    }
+    payload = json.dumps({"version": jobs_module.JOB_STORE_VERSION, "jobs": [row]})
+    (state_dir / jobs_module.JOB_STORE_FILE_NAME).write_text(payload, encoding="utf-8")
+    (state_dir / jobs_module.JOB_STORE_BACKUP_FILE_NAME).write_text(payload, encoding="utf-8")
+    async def no_shells():
+        return {"sessions": []}
+
+    monkeypatch.setattr(jobs_module, "list_shells", no_shells)
+    assert await collect_pending_job_events() == []

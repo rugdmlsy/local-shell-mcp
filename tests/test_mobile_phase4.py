@@ -344,27 +344,13 @@ async def test_morrows_job_event_push_reuses_lsm_control_key(tmp_path, monkeypat
 
     captured = {}
 
-    class FakeResponse:
-        def raise_for_status(self):
-            return None
+    def fake_post(url, payload, headers, timeout):
+        captured["url"] = url
+        captured["headers"] = dict(headers)
+        captured["json"] = dict(payload)
+        captured["timeout"] = timeout
 
-    class FakeClient:
-        def __init__(self, *args, **kwargs):  # noqa: ARG002
-            pass
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *args):  # noqa: ARG002
-            return False
-
-        async def post(self, url, headers=None, json=None):
-            captured["url"] = url
-            captured["headers"] = dict(headers or {})
-            captured["json"] = dict(json or {})
-            return FakeResponse()
-
-    monkeypatch.setattr(remote.httpx, "AsyncClient", FakeClient)
+    monkeypatch.setattr(remote, "_post_json_without_environment", fake_post)
 
     manager = remote.RemoteManager()
     await manager._deliver_job_event_to_morrows(
@@ -385,6 +371,7 @@ async def test_morrows_job_event_push_reuses_lsm_control_key(tmp_path, monkeypat
 
     assert captured["url"].endswith("/api/internal/lsm/job-events")
     assert captured["headers"] == {"X-LSM-Control-Key": "shared-control-key"}
+    assert captured["timeout"] == 20.0
     assert captured["json"]["event_id"] == "job-finish:auth:1"
     assert captured["json"]["logical_session_id"] == "s_auth"
     assert captured["json"]["completed_at"] == "1970-01-01T00:02:03Z"

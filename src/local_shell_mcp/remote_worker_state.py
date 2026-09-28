@@ -4,8 +4,10 @@ import contextlib
 import json
 import os
 import shlex
+import shutil
 import stat
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -34,6 +36,22 @@ def worker_state_dir() -> Path:
 
 def worker_runtime_dir() -> Path:
     return worker_state_dir() / "runtime"
+
+
+def worker_previous_runtime_dir() -> Path:
+    return worker_state_dir() / "runtime.previous"
+
+
+def worker_pending_upgrade_path() -> Path:
+    return worker_state_dir() / "pending-upgrade.json"
+
+
+def worker_previous_config_path() -> Path:
+    return worker_state_dir() / "config.previous.json"
+
+
+def worker_bootstrap_path() -> Path:
+    return worker_state_dir() / "worker-bootstrap.py"
 
 
 def worker_config_path() -> Path:
@@ -116,34 +134,140 @@ def update_runtime_metadata(digest: str, version: str) -> dict[str, Any]:
     return data
 
 
+def write_pending_upgrade_marker(
+    *,
+    old_digest: str,
+    old_version: str,
+    new_digest: str,
+    new_version: str,
+) -> dict[str, Any]:
+    marker = {
+        "schema_version": 1,
+        "old_digest": old_digest,
+        "old_version": old_version,
+        "new_digest": new_digest,
+        "new_version": new_version,
+        "activated_at": time.time(),
+        "launch_attempted_at": None,
+    }
+    _atomic_write_text(
+        worker_pending_upgrade_path(),
+        json.dumps(marker, indent=2, sort_keys=True) + "\n",
+    )
+    return marker
+
+
+def commit_runtime_upgrade() -> bool:
+    pending = worker_pending_upgrade_path()
+    if not pending.exists():
+        return False
+    shutil.rmtree(worker_previous_runtime_dir(), ignore_errors=True)
+    worker_previous_config_path().unlink(missing_ok=True)
+    pending.unlink(missing_ok=True)
+    return True
+
+
+def rollback_pending_runtime_upgrade() -> bool:
+    pending = worker_pending_upgrade_path()
+    previous = worker_previous_runtime_dir()
+    if not pending.exists():
+        return False
+    if not previous.is_dir():
+        raise RuntimeError(f"pending worker upgrade has no rollback runtime: {previous}")
+    runtime = worker_runtime_dir()
+    failed = worker_state_dir() / f"runtime.failed.{os.getpid()}"
+    shutil.rmtree(failed, ignore_errors=True)
+    if runtime.exists():
+        runtime.replace(failed)
+    previous.replace(runtime)
+    previous_config = worker_previous_config_path()
+    if previous_config.exists():
+        previous_config.replace(worker_config_path())
+    pending.unlink(missing_ok=True)
+    shutil.rmtree(failed, ignore_errors=True)
+    return True
+
+
+def _worker_bootstrap_script() -> str:
+    state_home = str(worker_state_dir().resolve())
+    return f'''from __future__ import annotations
+
+import json
+import os
+import shutil
+import sys
+import time
+from pathlib import Path
+
+STATE_HOME = Path({state_home!r})
+RUNTIME = STATE_HOME / "runtime"
+PREVIOUS = STATE_HOME / "runtime.previous"
+PENDING = STATE_HOME / "pending-upgrade.json"
+CONFIG = STATE_HOME / "config.json"
+PREVIOUS_CONFIG = STATE_HOME / "config.previous.json"
+
+
+def atomic_write_json(path, payload):
+    temporary = path.with_name(path.name + ".tmp")
+    temporary.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\\n", encoding="utf-8")
+    os.replace(temporary, path)
+
+
+# Only a worker process launch consumes the single candidate attempt. Management
+# commands may inspect a pending upgrade without changing rollback state.
+worker_run = sys.argv[1:3] == ["worker", "run"]
+if worker_run and PENDING.exists():
+    marker = json.loads(PENDING.read_text(encoding="utf-8"))
+    if marker.get("launch_attempted_at"):
+        if not PREVIOUS.is_dir():
+            raise RuntimeError(f"pending worker upgrade has no rollback runtime: {{PREVIOUS}}")
+        failed = STATE_HOME / f"runtime.failed.{{os.getpid()}}"
+        shutil.rmtree(failed, ignore_errors=True)
+        if RUNTIME.exists():
+            os.replace(RUNTIME, failed)
+        os.replace(PREVIOUS, RUNTIME)
+        if PREVIOUS_CONFIG.exists():
+            os.replace(PREVIOUS_CONFIG, CONFIG)
+        PENDING.unlink(missing_ok=True)
+        shutil.rmtree(failed, ignore_errors=True)
+    else:
+        marker["launch_attempted_at"] = time.time()
+        atomic_write_json(PENDING, marker)
+
+if not (RUNTIME / "local_shell_mcp").is_dir():
+    raise SystemExit(f"local-shell-mcp worker runtime is not installed: {{RUNTIME}}")
+
+vendor = RUNTIME / "vendor"
+existing_pythonpath = os.environ.get("PYTHONPATH")
+runtime_pythonpath = os.pathsep.join((str(RUNTIME), str(vendor)))
+os.environ["PYTHONPATH"] = (
+    runtime_pythonpath
+    if not existing_pythonpath
+    else runtime_pythonpath + os.pathsep + existing_pythonpath
+)
+sys.path[:0] = [str(RUNTIME), str(vendor)]
+
+from local_shell_mcp.main import main
+
+main(sys.argv[1:])
+'''
+
+
 def install_launcher() -> Path:
     launcher = worker_launcher_path()
-    state_home = str(worker_state_dir().resolve())
+    bootstrap = worker_bootstrap_path()
     python = str(Path(sys.executable).resolve())
+    _atomic_write_text(bootstrap, _worker_bootstrap_script(), 0o600)
     if _is_windows():
         script = f'''@echo off
 setlocal
-set "STATE_HOME={state_home}"
-set "RUNTIME=%STATE_HOME%\\runtime"
-if not exist "%RUNTIME%\\local_shell_mcp" (
-  echo local-shell-mcp worker runtime is not installed: %RUNTIME% 1>&2
-  exit /b 1
-)
-set "PYTHONPATH=%RUNTIME%;%RUNTIME%\\vendor;%PYTHONPATH%"
-"{python}" -m local_shell_mcp.main %*
+"{python}" "{bootstrap}" %*
 exit /b %ERRORLEVEL%
 '''
     else:
         script = f'''#!/bin/sh
 set -eu
-STATE_HOME={shlex.quote(state_home)}
-RUNTIME="$STATE_HOME/runtime"
-if [ ! -d "$RUNTIME/local_shell_mcp" ]; then
-  echo "local-shell-mcp worker runtime is not installed: $RUNTIME" >&2
-  exit 1
-fi
-export PYTHONPATH="$RUNTIME:$RUNTIME/vendor${{PYTHONPATH:+:$PYTHONPATH}}"
-exec {shlex.quote(python)} -m local_shell_mcp.main "$@"
+exec {shlex.quote(python)} {shlex.quote(str(bootstrap))} "$@"
 '''
     _atomic_write_text(launcher, script, 0o755)
     return launcher
