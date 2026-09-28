@@ -28,7 +28,7 @@ async def test_worker_bundle_and_manifest_are_stable(tmp_path, monkeypatch):
     response = await routes.worker_manifest(None)  # type: ignore[arg-type]
     data = json.loads(response.body)
     assert data["sha256"] == hashlib.sha256(first).hexdigest()
-    assert data["schema_version"] == 2
+    assert data["schema_version"] == 1
     assert data["vendored_distributions"] == []
     assert data["url"] == (
         "https://example.test/remote/worker-bundle.tgz?sha256=" + data["sha256"]
@@ -280,3 +280,14 @@ def test_static_startup_distribution_roots_map_external_modules(monkeypatch):
         lambda: {"synthetic_import": ["synthetic-dist"]},
     )
     assert bundle_builder._startup_distribution_roots() == {"synthetic-dist"}  # noqa: SLF001
+
+
+def test_worker_manifest_remains_compatible_with_morrow18_updater():
+    data = routes._worker_manifest_data()  # noqa: SLF001
+    # morrow.18 hard-coded schema_version == 1 and ignored unknown keys.
+    # Keep schema v1 until a negotiated manifest protocol exists.
+    assert data["schema_version"] == 1
+    assert data["bundle_version"] == routes.__version__
+    assert isinstance(data["vendored_distributions"], list)
+    assert len(data["sha256"]) == 64
+    assert data["url"]

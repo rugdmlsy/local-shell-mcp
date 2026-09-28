@@ -25,7 +25,7 @@ def _worker_manifest_data() -> dict[str, Any]:
     payload = worker_bundle_bytes()
     digest = hashlib.sha256(payload).hexdigest()
     return {
-        "schema_version": 2,
+        "schema_version": 1,
         "bundle_version": __version__,
         "vendored_distributions": list(worker_bundle_artifact().distributions),
         "sha256": digest,
