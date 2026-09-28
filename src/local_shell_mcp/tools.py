@@ -3796,6 +3796,11 @@ def build_mcp() -> FastMCP:
                 sizes=["84x84"],
             )
         ],
+        # Logical Sessions live in our durable store, independently of HTTP.
+        # Legacy clients may retain Mcp-Session-Id after a controller restart;
+        # request-scoped transports ignore that stale ID without reinitializing.
+        # LSM does not require the stateful server-to-client MCP backchannel.
+        stateless_http=True,
         transport_security=_transport_security_settings(),
     )
     # FastMCP currently leaves the low-level server version unset, which makes

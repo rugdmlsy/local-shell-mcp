@@ -477,7 +477,7 @@ def test_cached_open_live_workspace_recipient_executes_over_http(tmp_path, monke
         initialized = client.post("/mcp", json=_mcp_initialize_payload(), headers=_mcp_headers())
         assert initialized.status_code == 200
         session_headers = {
-            "mcp-session-id": initialized.headers["mcp-session-id"],
+            "mcp-session-id": initialized.headers.get("mcp-session-id", "legacy-stale-session"),
             "mcp-protocol-version": "2025-06-18",
         }
         acknowledged = client.post(
@@ -553,7 +553,7 @@ def test_mcp_requires_auth_for_initialize_and_delete_by_default(tmp_path, monkey
             headers=_mcp_headers(authorization=f"Bearer {token}"),
         )
         assert initialized.status_code == 200
-        session_id = initialized.headers["mcp-session-id"]
+        session_id = initialized.headers.get("mcp-session-id", "legacy-stale-session")
 
         unauthenticated_delete = client.delete(
             "/mcp",
@@ -590,6 +590,8 @@ def test_mcp_sessions_have_idle_timeout_and_hard_limit(tmp_path, monkeypatch):
     get_settings.cache_clear()
 
     mcp = build_mcp()
+    # Keep coverage for explicitly stateful SDK instances used by embedders.
+    mcp.settings.stateless_http = False
     app = _build_mcp_http_app(mcp)
     assert mcp._session_manager.session_idle_timeout == 7
 

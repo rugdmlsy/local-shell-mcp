@@ -208,7 +208,7 @@ fi
 readonly release_name="${release_tag}-${commit_sha:0:12}"
 readonly local_icon="docs/assets/logo.png"
 readonly icon_bytes="$(wc -c < "${local_icon}" | tr -d ' ')"
-readonly icon_sha256="$(shasum -a 256 "${local_icon}" | awk '{print $1}')"
+readonly icon_base64="$(base64 < "${local_icon}" | tr -d '\n')"
 test "${icon_bytes}" -lt 10240 || {
   echo "Morrow icon must remain below 10 KiB" >&2
   exit 1
@@ -293,7 +293,7 @@ REMOTE
 echo "release: ${release_name}"
 echo "version: ${version}"
 echo "commit: ${commit_sha}"
-echo "icon: ${icon_bytes} bytes ${icon_sha256}"
+echo "icon: ${icon_bytes} bytes"
 if ${dry_run}; then
   echo "DRY RUN: preflight passed; no tag, release, symlink, service, or secret was changed"
   exit 0
@@ -311,20 +311,21 @@ remote bash -s -- \
 
 remote bash -s -- \
   "${deploy_root}" "${release_name}" "${commit_sha}" "${version}" \
-  "${icon_bytes}" "${icon_sha256}" <<'REMOTE'
+  "${icon_bytes}" "${icon_base64}" <<'REMOTE'
 set -euo pipefail
 deploy_root="$1"
 release_name="$2"
 commit_sha="$3"
 version="$4"
 icon_bytes="$5"
-icon_sha256="$6"
+icon_base64="$6"
 release_dir="${deploy_root}/releases/${release_name}"
 test -f "${release_dir}/READY"
 grep -Fxq "${commit_sha}" "${release_dir}/READY"
 test "$("${release_dir}/.venv/bin/local-shell-mcp" --version)" = "${version}"
 test "$(wc -c < "${release_dir}/docs/assets/logo.png" | tr -d ' ')" = "${icon_bytes}"
-test "$(sha256sum "${release_dir}/docs/assets/logo.png" | awk '{print $1}')" = "${icon_sha256}"
+# Compare the small public icon directly, without a checksum step.
+cmp -s "${release_dir}/docs/assets/logo.png" <(printf '%s' "${icon_base64}" | base64 --decode)
 "${release_dir}/.venv/bin/python" - "${release_dir}/release-manifest.json" "${commit_sha}" <<'PY'
 import json
 import sys

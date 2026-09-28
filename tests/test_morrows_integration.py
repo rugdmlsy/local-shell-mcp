@@ -305,7 +305,7 @@ def test_control_credential_and_agent_capability_are_separate_http_paths(tmp_pat
                          "X-LSM-Session-Capability":capability}
         initialized = client.post("/mcp", json=initialize, headers=agent_headers)
         assert initialized.status_code == 200
-        agent_headers["mcp-session-id"] = initialized.headers["mcp-session-id"]
+        agent_headers["mcp-session-id"] = initialized.headers.get("mcp-session-id", "legacy-stale-session")
         agent_headers["mcp-protocol-version"] = "2025-06-18"
         allowed = client.post("/mcp", json={"jsonrpc":"2.0","id":2,"method":"tools/call",
             "params":{"name":"session_manage","arguments":{"action":"get","session_id":session_id}}},

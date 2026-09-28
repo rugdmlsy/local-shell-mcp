@@ -159,3 +159,28 @@ restarts the same unit.
 Never delete the old staging tree during rollout. Move it to a read-only legacy
 location only after 24 hours of observation, retain it for at least 30 days,
 and obtain separate approval before deletion.
+
+## MCP clients across controller restarts
+
+Standalone Streamable HTTP uses request-scoped (`stateless_http=True`) SDK
+transports. Older clients may keep sending a `Mcp-Session-Id` issued before an
+upgrade or restart; the server ignores that transport ID and still authenticates
+every request. Clients do not need to repeat `initialize` to recover from a lost
+in-memory transport session. Durable Logical Sessions, files, jobs, remote workers
+and Live Workspace state retain their existing storage and authorization rules.
+
+The SDK session count limiter and idle timeout are not installed for this HTTP
+mode. They still apply to explicitly stateful embedded SDK instances. This mode
+does not provide a persistent MCP server-to-client backchannel (sampling, roots,
+elicitation or unsolicited notifications); LSM currently does not use that channel.
+Live Workspace uses its existing separate authenticated endpoints.
+
+This change does not replay interrupted tool calls or guarantee exactly-once
+execution. After an ambiguous disconnect during a write, inspect the operation's
+receipt/state before retrying it. A stopped service still needs to be started;
+stateless transport cannot make an unavailable server reachable.
+
+`tests/test_mcp_restart.py` runs real successive server processes, reproduces a
+stateful 404 with an old SDK-issued ID, and verifies that the same ID works after
+upgrade and a subsequent stateless restart without another initialize. It also
+checks OAuth enforcement, Logical Session continuity, file state and shell calls.

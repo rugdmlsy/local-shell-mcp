@@ -153,11 +153,13 @@ def _build_mcp_http_app(mcp):  # noqa: ANN001
     settings = get_settings()
     inner = mcp.streamable_http_app()
     session_manager = getattr(mcp, "_session_manager", None)
-    if session_manager is not None and hasattr(session_manager, "session_idle_timeout"):
+    # Stateless transports have no retained SDK sessions to expire or limit.
+    stateful = session_manager is not None and not getattr(session_manager, "stateless", False)
+    if stateful and hasattr(session_manager, "session_idle_timeout"):
         session_manager.session_idle_timeout = max(1, settings.mcp_session_idle_timeout_s)
 
     app = _with_oauth_routes(inner, mcp)
-    if session_manager is not None:
+    if stateful:
         app.add_middleware(
             McpSessionLimitMiddleware,
             session_manager=session_manager,
