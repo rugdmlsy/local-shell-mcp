@@ -1,38 +1,34 @@
 # Morrow production deployment
 
-This directory defines the production shape for `mcp.xycdev.com`. GitHub is the
-authoritative source, the Mac is the development checkout, and the VPS runs an
-immutable tagged release. The production network shape is also owned here:
+This directory defines the standalone Local Shell MCP production release.
+GitHub is the authoritative source, the Mac is the development checkout, and
+the VPS runs an immutable tagged release. The shared public edge is now owned
+by Morrows; this deployment must preserve a router marked as Morrows-managed:
 
 ```text
 Cloudflare Tunnel
        |
        v
 Caddy 127.0.0.1:8765
-  |-- /morrows (MCP) -> Local Shell MCP OAuth -> Morrows 127.0.0.1:8787/mcp
-  |-- /morrows/ui -> Morrows 127.0.0.1:8787
-  |-- /morrows/api -> Local Shell MCP OAuth -> Morrows 127.0.0.1:8787/api
+  |-- /morrows* -> Morrows / morrow-runtime
   '-- everything else -> Local Shell MCP 127.0.0.1:8766
 ```
 
 Cloudflared continues to target `127.0.0.1:8765`. Caddy is the only process
 that owns that edge port. Local Shell MCP must never bind 8765 in production.
-The canonical router is `mcp-router.caddy`; the deployment command installs it,
-the production launcher, and the systemd unit before every release restart.
+`mcp-router.caddy` remains a bootstrap/fallback router for installations where
+Morrows has not taken ownership. Once `/etc/caddy/morrows-router.caddy` contains
+the Morrows ownership marker, LSM deployment preserves it instead of overwriting
+it. The active connector may be `morrows-cloudflared.service`; LSM no longer
+requires the legacy connector service name.
 The same deploy command owns the private LSM control-plane credential:
 `ensure-production-secrets.sh` generates `LOCAL_SHELL_MCP_CONTROL_API_KEY`
 inside the existing mode-0600 `service.env` when it is missing. The value is
 never printed, and a dry-run never creates or changes secrets.
 
-Morrows MCP uses the same public OAuth boundary with no second ChatGPT-facing
-credential. The public OAuth bearer is validated by LSM and is never forwarded
-to Morrows. LSM strips caller-supplied Morrows identity headers, then forwards
-only the validated OAuth `client_id` plus optional registered `client_name`
-over the trusted loopback hop. Morrows resolves a stable technical AgentInstance
-from that `client_id`; descriptive agent/account/platform/device identity is
-self-reported separately and never affects authorization. Morrows can therefore
-keep `MORROWS_REQUIRE_AGENT_AUTH=1` for ordinary internal employee/runtime
-calls without making ChatGPT manage a second Bearer token.
+Morrows MCP authentication is no longer part of the standalone LSM request
+path. Morrows owns that boundary through its embedded `morrow-runtime`.
+Standalone LSM continues to own only its root MCP/OAuth surfaces.
 
 Production source and release orchestration live on the Mac. Edit, test, commit,
 push, create/push release tags, and invoke `deploy-vps.sh` from the Mac checkout.

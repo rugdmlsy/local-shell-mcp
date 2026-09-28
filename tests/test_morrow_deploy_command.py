@@ -46,6 +46,7 @@ def test_deploy_command_keeps_release_and_rollback_guards() -> None:
         "switch-release.sh",
         "rollback-release.sh",
         "local-shell-mcp-cloudflared.service",
+        "morrows-cloudflared.service",
         "LSM_DEPLOY_UV_BIN",
         "sudo -n systemctl --no-block restart",
         "wait_for_release_process",
@@ -344,14 +345,18 @@ def test_production_topology_owns_shared_caddy_edge() -> None:
     assert "redir * /morrows/ui/ 308" in router
     assert "http://127.0.0.1:8766/healthz" in verifier
     assert "http://127.0.0.1:8765/healthz" in verifier
-    assert "http://127.0.0.1:8765/morrows" in verifier
-    assert "http://127.0.0.1:8765/morrows/api/operator-session" in verifier
-    assert "www-authenticate: Bearer" in verifier
+    assert "http://127.0.0.1:8765/morrows" not in verifier
+    assert "operator-session" not in verifier
     assert "install -m 0755" in installer
     assert "local-shell-mcp.service" in installer
     assert "morrows-router.caddy" in installer
+    assert "Managed by Morrows. Standalone Local Shell MCP must not overwrite this file." in installer
+    assert "preserving $router_target" in installer
     assert "caddy validate" in installer
     assert "systemctl daemon-reload" in installer
+    activator = ACTIVATE_TOPOLOGY.read_text(encoding="utf-8")
+    assert "morrows-cloudflared.service" in activator
+    assert "local-shell-mcp-cloudflared.service" in activator
 
 
 def test_production_owns_official_live_workspace_and_goal_continuation() -> None:

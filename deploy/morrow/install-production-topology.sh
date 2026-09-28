@@ -23,14 +23,19 @@ systemctl is-active --quiet caddy.service
 
 install -m 0755 "$launcher" "$config_root/run-host-vps.sh"
 sudo -n install -m 0644 "$unit" /etc/systemd/system/local-shell-mcp.service
-sudo -n install -m 0644 "$router" "$router_target"
+if sudo -n test -f "$router_target" &&
+  sudo -n grep -Fq 'Managed by Morrows. Standalone Local Shell MCP must not overwrite this file.' "$router_target"; then
+  echo "Morrows owns the shared router; preserving $router_target"
+else
+  sudo -n install -m 0644 "$router" "$router_target"
+  sudo -n caddy fmt --overwrite "$router_target"
+fi
 
 if ! sudo -n grep -Fxq 'import /etc/caddy/morrows-router.caddy' "$caddyfile"; then
   printf '\n# Local Shell MCP / Morrows loopback edge\nimport /etc/caddy/morrows-router.caddy\n' |
     sudo -n tee -a "$caddyfile" >/dev/null
 fi
 
-sudo -n caddy fmt --overwrite "$router_target"
 sudo -n caddy validate --config "$caddyfile"
 sudo -n systemctl daemon-reload
 

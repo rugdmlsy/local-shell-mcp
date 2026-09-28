@@ -9,7 +9,11 @@ service_name="$1"
 
 systemctl is-active --quiet "$service_name"
 systemctl is-active --quiet caddy.service
-systemctl is-active --quiet local-shell-mcp-cloudflared.service
+if systemctl is-active --quiet morrows-cloudflared.service; then
+  :
+else
+  systemctl is-active --quiet local-shell-mcp-cloudflared.service
+fi
 
 for attempt in $(seq 1 30); do
   if curl -fsS --max-time 2 http://127.0.0.1:8766/healthz >/dev/null; then
@@ -29,4 +33,4 @@ for attempt in $(seq 1 15); do
   sleep 1
 done
 
-echo "production edge active: Caddy :8765 -> Local Shell MCP :8766"
+echo "production edge active: Caddy :8765; standalone LSM available at :8766"

@@ -278,7 +278,11 @@ else
 fi
 sudo -n true
 systemctl is-active --quiet "${service_name}"
-systemctl is-active --quiet local-shell-mcp-cloudflared.service
+if systemctl is-active --quiet morrows-cloudflared.service; then
+  :
+else
+  systemctl is-active --quiet local-shell-mcp-cloudflared.service
+fi
 test -d "${deploy_root}/releases"
 test "$(df -Pk "${deploy_root}" | awk 'NR == 2 {print $4}')" -gt 1048576
 echo "remote host: $(hostname)"
