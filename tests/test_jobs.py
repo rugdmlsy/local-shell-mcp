@@ -9,8 +9,11 @@ from concurrent.futures import ThreadPoolExecutor
 import pytest
 
 import local_shell_mcp.jobs as jobs_module
+from local_shell_mcp.execution_scope import execution_machine, execution_session
 from local_shell_mcp.jobs import (
+    collect_pending_job_events,
     list_jobs,
+    mark_job_event_uploaded,
     register_managed_job_handler,
     retry_job,
     start_job,
@@ -24,9 +27,7 @@ from local_shell_mcp.settings import get_settings
 async def _wait_for_shell_job_completion(job_id: str, timeout_s: float = 15.0):
     deadline = time.monotonic() + timeout_s
     while True:
-        row = next(
-            job for job in (await list_jobs())["jobs"] if job["job_id"] == job_id
-        )
+        row = next(job for job in (await list_jobs())["jobs"] if job["job_id"] == job_id)
         if row["status"] != "running" or time.monotonic() >= deadline:
             return row
         await asyncio.sleep(0.1)
@@ -59,9 +60,7 @@ def test_job_store_lock_timeout_is_actionable(tmp_path, monkeypatch):
     get_settings.cache_clear()
 
     with (
-        pytest.raises(
-            TimeoutError, match="another local-shell-mcp operation or process"
-        ),
+        pytest.raises(TimeoutError, match="another local-shell-mcp operation or process"),
         jobs_module._store_transaction(),
     ):
         raise AssertionError("transaction body must not run")
@@ -87,9 +86,7 @@ def test_job_store_thread_lock_timeout_is_actionable(tmp_path, monkeypatch):
 
     try:
         with (
-            pytest.raises(
-                TimeoutError, match="another local-shell-mcp operation or process"
-            ),
+            pytest.raises(TimeoutError, match="another local-shell-mcp operation or process"),
             jobs_module._store_transaction(),
         ):
             raise AssertionError("transaction body must not run")
@@ -207,8 +204,6 @@ async def test_jobs_track_tail_stop_and_retry(tmp_path, monkeypatch):
     assert jobs_module._load_store()["jobs"][0]["shell_session_id"] == retried["session_id"]
 
 
-
-
 def test_managed_job_state_updates_retry_store_contention(tmp_path, monkeypatch):
     state_dir = tmp_path / ".state"
     runtime_dir = state_dir / "jobs"
@@ -264,9 +259,9 @@ def test_managed_job_state_updates_retry_store_contention(tmp_path, monkeypatch)
         result={"copied": True},
     )
 
-    stored = json.loads(
-        (state_dir / jobs_module.JOB_STORE_FILE_NAME).read_text(encoding="utf-8")
-    )["jobs"][0]
+    stored = json.loads((state_dir / jobs_module.JOB_STORE_FILE_NAME).read_text(encoding="utf-8"))[
+        "jobs"
+    ][0]
     assert stored["output_bytes"] == len(b"hello\n")
     assert stored["progress"] == {"phase": "copying"}
     assert stored["status"] == "succeeded"
@@ -330,8 +325,7 @@ def test_managed_job_state_updates_defer_after_bounded_contention(tmp_path, monk
     deferred_paths = sorted(deferred_dir.glob("*.json"))
     assert len(deferred_paths) == 3
     assert [
-        json.loads(path.read_text(encoding="utf-8"))["operation"]
-        for path in deferred_paths
+        json.loads(path.read_text(encoding="utf-8"))["operation"] for path in deferred_paths
     ] == ["append_log", "update_progress", "finish"]
 
     monkeypatch.setattr(jobs_module, "_store_transaction", original_transaction)
@@ -381,9 +375,7 @@ def test_managed_deferred_update_records_are_validated(tmp_path, monkeypatch):
     get_settings.cache_clear()
 
     def write_record(name, record):
-        (deferred_dir / f"{name}.json").write_text(
-            json.dumps(record), encoding="utf-8"
-        )
+        (deferred_dir / f"{name}.json").write_text(json.dumps(record), encoding="utf-8")
 
     write_record("not-object", [])
     write_record(
@@ -605,10 +597,10 @@ async def test_managed_jobs_track_tail_stop_and_retry(tmp_path, monkeypatch):
     for _ in range(50):
         await asyncio.sleep(0.01)
         tail = await tail_job(job["job_id"])
-        if (
-            "started 7" in tail["output"]
-            and tail["job"]["progress"] == {"phase": "waiting", "value": 7}
-        ):
+        if "started 7" in tail["output"] and tail["job"]["progress"] == {
+            "phase": "waiting",
+            "value": 7,
+        }:
             break
     assert tail["job"]["progress"] == {"phase": "waiting", "value": 7}
 
@@ -691,6 +683,7 @@ async def test_managed_job_failure_and_launch_cleanup(tmp_path, monkeypatch):
         return payload
 
     register_managed_job_handler("launch-failure-managed", idle_handler)
+
     def fail_launch(*args, **kwargs):  # noqa: ARG001
         raise RuntimeError("launch failed")
 
@@ -1536,3 +1529,58 @@ async def test_job_list_does_not_interrupt_active_retry(tmp_path, monkeypatch):
     retried = await retry_task
     assert retried["status"] == "running"
     assert retried["attempts"] == 2
+
+
+@pytest.mark.asyncio
+async def test_terminal_job_event_is_independent_of_mobile_opt_in_and_carries_resume_identity(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("LOCAL_SHELL_MCP_WORKSPACE_ROOT", str(tmp_path))
+    monkeypatch.setenv("LOCAL_SHELL_MCP_STATE_DIR", str(tmp_path / ".state"))
+    get_settings.cache_clear()
+
+    sessions: set[str] = set()
+
+    async def fake_start_shell(cwd=".", name=None, command=None):  # noqa: ARG001
+        session_id = str(name)
+        sessions.add(session_id)
+        return {"session_id": session_id, "cwd": cwd, "backend": "fake"}
+
+    async def fake_list_shells():
+        return {"sessions": [{"session_id": item} for item in sorted(sessions)]}
+
+    monkeypatch.setattr(jobs_module, "start_shell", fake_start_shell)
+    monkeypatch.setattr(jobs_module, "list_shells", fake_list_shells)
+
+    with execution_session("s_morrows_wait"), execution_machine("morrow-node-01"):
+        started = await start_job(
+            "true",
+            notify_on_finish=False,
+            notify_summary_path="work/report.json",
+        )
+
+    with jobs_module._store_transaction() as store:
+        row = jobs_module._find_job(store, started["job_id"])
+        sessions.discard(str(row.get("session_id") or ""))
+        row["status"] = "succeeded"
+        row["updated_at"] = 20.0
+        row["completed_at"] = 20.0
+        row["exit_code"] = 0
+        row["result"] = {"records": 147}
+
+    events = await collect_pending_job_events()
+    assert len(events) == 1
+    event = events[0]
+    assert event["type"] == "tracked_job_terminal"
+    assert event["data"]["job_id"] == started["job_id"]
+    assert event["data"]["source_machine"] == "morrow-node-01"
+    assert event["data"]["logical_session_id"] == "s_morrows_wait"
+    assert event["data"]["attempt"] == 1
+    assert event["data"]["status"] == "succeeded"
+    assert event["data"]["exit_code"] == 0
+    assert event["data"]["summary_ref"] == "work/report.json"
+    assert event["data"]["result"] == {"records": 147}
+    assert event["data"]["notify_on_finish"] is False
+
+    assert mark_job_event_uploaded(event["id"]) is True
+    assert await collect_pending_job_events() == []

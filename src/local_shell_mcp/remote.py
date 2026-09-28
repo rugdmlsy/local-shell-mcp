@@ -23,9 +23,12 @@ import urllib.parse
 import urllib.request
 import uuid
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from io import BytesIO
 from pathlib import Path
 from typing import Any
+
+import httpx
 
 from . import __version__
 from .audit import audit, suppress_audit
@@ -52,9 +55,9 @@ from .fs_ops import (
 )
 from .jobs import (
     JOB_LIST_DEFAULT_LIMIT,
-    collect_pending_job_notifications,
+    collect_pending_job_events,
     list_jobs,
-    mark_job_notification_sent,
+    mark_job_event_uploaded,
     retry_job,
     start_job,
     stop_job,
@@ -123,6 +126,7 @@ MAX_REMOTE_INVITES = 1_024
 MAX_REMOTE_MACHINE_NAME_LENGTH = 128
 MAX_REMOTE_MOBILE_EVENTS = 100
 MAX_REMOTE_MOBILE_RECENT_EVENT_IDS = 500
+MAX_REMOTE_JOB_EVENTS = 1_000
 REMOTE_MOBILE_EVENT_DEFAULT_TTL_S = 7 * 24 * 60 * 60
 REMOTE_WORKER_INTERACTIVE_LANE = "interactive"
 REMOTE_WORKER_TRANSFER_LANE = "transfer"
@@ -352,6 +356,7 @@ class RemoteManager:
         self.pending_machines: dict[str, str] = {}
         self.cancelled_jobs: dict[str, float] = {}
         self.claimed_jobs: set[str] = set()
+        self.job_events: list[dict[str, Any]] = []
         self._lock = asyncio.Lock()
         self._state_lock = threading.RLock()
         self._registry_loaded = False
@@ -379,6 +384,11 @@ class RemoteManager:
             raise ValueError(f"remote worker registry invites field is invalid: {source}")
         if any(not isinstance(item, dict) for item in invites):
             raise ValueError(f"remote worker registry invite entry is invalid: {source}")
+        job_events = data.get("job_events", [])
+        if not isinstance(job_events, list) or any(
+            not isinstance(item, dict) for item in job_events
+        ):
+            raise ValueError(f"remote worker registry job_events field is invalid: {source}")
         invite_rows = invites
         for item in invite_rows:
             try:
@@ -394,6 +404,7 @@ class RemoteManager:
             "generation": generation,
             "workers": [item for item in workers if isinstance(item, dict)],
             "invites": invite_rows,
+            "job_events": job_events,
         }
 
     def _load_registry_unlocked(self, *, force: bool = False) -> None:
@@ -522,6 +533,8 @@ class RemoteManager:
         self.workers = workers
         self.tokens = tokens
         self.invites = invites
+        self.job_events = [dict(item) for item in registry.get("job_events", [])]
+        self._prune_job_events_locked()
         self._registry_loaded = True
         if recovered_from_backup:
             self._save_registry_unlocked()
@@ -533,8 +546,25 @@ class RemoteManager:
             self._load_registry_unlocked(force=True)
             yield
 
+    def _prune_job_events_locked(self) -> None:
+        """Bound retained history without ever dropping an undelivered event."""
+        overflow = len(self.job_events) - MAX_REMOTE_JOB_EVENTS
+        if overflow <= 0:
+            return
+        retained: list[dict[str, Any]] = []
+        for event in self.job_events:
+            fully_delivered = bool(event.get("mobile_delivered_at")) and bool(
+                event.get("morrows_delivered_at")
+            )
+            if overflow > 0 and fully_delivered:
+                overflow -= 1
+                continue
+            retained.append(event)
+        self.job_events = retained
+
     def _save_registry_unlocked(self) -> None:
         now = _utc()
+        self._prune_job_events_locked()
         generation = secrets.token_hex(16)
         data = {
             "version": 1,
@@ -550,7 +580,9 @@ class RemoteManager:
                     "push_token": worker.push_token,
                     "push_environment": worker.push_environment,
                     "pending_events": worker.pending_events[-MAX_REMOTE_MOBILE_EVENTS:],
-                    "recent_event_ids": worker.recent_event_ids[-MAX_REMOTE_MOBILE_RECENT_EVENT_IDS:],
+                    "recent_event_ids": worker.recent_event_ids[
+                        -MAX_REMOTE_MOBILE_RECENT_EVENT_IDS:
+                    ],
                 }
                 for worker in sorted(self.workers.values(), key=lambda item: item.name)
             ],
@@ -564,6 +596,7 @@ class RemoteManager:
                 for invite in sorted(self.invites.values(), key=lambda item: item.code)
                 if not invite.used and invite.expires_at >= now
             ],
+            "job_events": self.job_events,
         }
         payload = json.dumps(data, indent=2, sort_keys=True).encode("utf-8")
         store = get_state_store()
@@ -660,7 +693,8 @@ class RemoteManager:
             "ttl_s": ttl,
             "join_url": join_url,
             "command": command,
-            "persistent_command": command + ' --persist && export PATH="${LOCAL_SHELL_MCP_WORKER_BIN_DIR:-$HOME/.local/bin}:$PATH"',
+            "persistent_command": command
+            + ' --persist && export PATH="${LOCAL_SHELL_MCP_WORKER_BIN_DIR:-$HOME/.local/bin}:$PATH"',
             "powershell_join_url": powershell_join_url,
             "powershell_command": powershell_command,
             "powershell_persistent_command": powershell_command + " -Persist",
@@ -918,11 +952,157 @@ class RemoteManager:
                 self._save_registry_unlocked()
         return {"acked": removed, "count": len(removed)}
 
+    @staticmethod
+    def _normalize_job_event(payload: dict[str, Any], source_machine: str) -> dict[str, Any]:
+        event_id = str(payload.get("id") or "").strip()[:160]
+        if not event_id:
+            raise ValueError("worker event id is required")
+        data = dict(payload.get("data") or {})
+        data["source_machine"] = source_machine
+        required = (
+            "job_id",
+            "source_machine",
+            "logical_session_id",
+            "attempt",
+            "status",
+            "exit_code",
+            "completed_at",
+            "terminal_reason",
+        )
+        missing = [name for name in required if name not in data]
+        missing.extend(
+            name
+            for name in ("job_id", "source_machine", "attempt", "status", "completed_at")
+            if name in data and data.get(name) in (None, "")
+        )
+        if missing:
+            raise ValueError(f"job terminal event missing fields: {', '.join(missing)}")
+        if str(data["status"]) not in {"succeeded", "failed", "exited", "stopped", "lost"}:
+            raise ValueError("invalid terminal job status")
+        return {
+            "id": event_id,
+            "type": "tracked_job_terminal",
+            "title": str(payload.get("title") or "LSM job completed")[:200],
+            "body": str(payload.get("body") or "Tracked job completed")[:1_000],
+            "data": data,
+            "ingested_at": _utc(),
+            "mobile_delivered_at": None,
+            "morrows_delivered_at": None,
+        }
+
+    async def ingest_job_event(
+        self, payload: dict[str, Any], *, source_machine: str
+    ) -> dict[str, Any]:
+        event = self._normalize_job_event(payload, source_machine)
+        duplicate = False
+        with self._state_lock, self._registry_transaction_unlocked():
+            duplicate = any(item.get("id") == event["id"] for item in self.job_events)
+            if not duplicate:
+                self.job_events.append(event)
+                self._prune_job_events_locked()
+                self._save_registry_unlocked()
+        # Durable ingest is the worker ACK boundary. Consumer delivery below is
+        # independent, idempotent, and may remain pending after this call.
+        deliveries = await self.dispatch_pending_job_events(event_ids={event["id"]})
+        return {
+            "event_id": event["id"],
+            "accepted": True,
+            "duplicate": duplicate,
+            **deliveries,
+        }
+
+    def _mark_job_event_consumer_delivered(self, event_id: str, consumer: str) -> None:
+        field = f"{consumer}_delivered_at"
+        with self._state_lock, self._registry_transaction_unlocked():
+            for event in self.job_events:
+                if str(event.get("id") or "") == event_id and not event.get(field):
+                    event[field] = _utc()
+                    self._prune_job_events_locked()
+                    self._save_registry_unlocked()
+                    return
+
+    async def _deliver_job_event_to_morrows(self, event: dict[str, Any]) -> None:
+        settings = get_settings()
+        control_key = str(settings.control_api_key or "").strip()
+        if not control_key:
+            raise RuntimeError("LSM control key is not configured")
+        data = dict(event.get("data") or {})
+        completed_at = data.get("completed_at")
+        if isinstance(completed_at, (int, float)):
+            data["completed_at"] = (
+                datetime.fromtimestamp(float(completed_at), UTC).isoformat().replace("+00:00", "Z")
+            )
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(20.0), follow_redirects=False, trust_env=False
+        ) as client:
+            response = await client.post(
+                settings.morrows_job_event_url,
+                headers={"X-LSM-Control-Key": control_key},
+                json={
+                    "event_id": event["id"],
+                    **data,
+                },
+            )
+            response.raise_for_status()
+
+    async def dispatch_pending_job_events(
+        self, *, event_ids: set[str] | None = None
+    ) -> dict[str, Any]:
+        with self._state_lock, self._registry_transaction_unlocked():
+            pending = [
+                dict(event)
+                for event in self.job_events
+                if event_ids is None or str(event.get("id") or "") in event_ids
+            ]
+        mobile_delivered: list[str] = []
+        morrows_delivered: list[str] = []
+        for event in pending:
+            event_id = str(event.get("id") or "")
+            data = dict(event.get("data") or {})
+            if not event.get("mobile_delivered_at"):
+                if not bool(data.get("notify_on_finish", False)):
+                    self._mark_job_event_consumer_delivered(event_id, "mobile")
+                    mobile_delivered.append(event_id)
+                else:
+                    result = await self.queue_mobile_event(
+                        event_id=event_id,
+                        event_type="job_completed",
+                        title=str(event.get("title") or "LSM job completed"),
+                        body=str(event.get("body") or "Tracked job completed"),
+                        data=data,
+                        wake_reason="job_completed",
+                    )
+                    if result.get("accepted"):
+                        self._mark_job_event_consumer_delivered(event_id, "mobile")
+                        mobile_delivered.append(event_id)
+            if not event.get("morrows_delivered_at"):
+                try:
+                    await self._deliver_job_event_to_morrows(event)
+                except (RuntimeError, httpx.HTTPError):
+                    pass
+                else:
+                    self._mark_job_event_consumer_delivered(event_id, "morrows")
+                    morrows_delivered.append(event_id)
+        return {
+            "mobile_delivered_event_ids": mobile_delivered,
+            "morrows_delivered_event_ids": morrows_delivered,
+        }
+
     async def submit_worker_event(self, access: str, payload: dict[str, Any]) -> dict[str, Any]:
         worker = self._worker_by_token(access)
         event_id = str(payload.get("id") or "").strip()
         if not event_id:
             raise ValueError("worker event id is required")
+        if str(payload.get("type") or "") == "tracked_job_terminal":
+            result = await self.ingest_job_event(payload, source_machine=worker.name)
+            with contextlib.suppress(Exception):
+                audit(
+                    "remote_worker_event",
+                    machine=worker.name,
+                    event_id=event_id,
+                    accepted=result["accepted"],
+                )
+            return result
         result = await self.queue_mobile_event(
             event_id=event_id,
             event_type=str(payload.get("type") or "worker_event"),
@@ -933,7 +1113,12 @@ class RemoteManager:
             wake_reason="worker_event",
         )
         with contextlib.suppress(Exception):
-            audit("remote_worker_event", machine=worker.name, event_id=event_id, accepted=result["accepted"])
+            audit(
+                "remote_worker_event",
+                machine=worker.name,
+                event_id=event_id,
+                accepted=result["accepted"],
+            )
         return result
 
     async def mobile_dashboard(self, access: str) -> dict[str, Any]:
@@ -1051,9 +1236,7 @@ class RemoteManager:
             self._cancel_job_locked(job_id)
             return True
 
-    async def poll(
-        self, token: str, payload: dict[str, Any] | None = None
-    ) -> dict[str, Any]:
+    async def poll(self, token: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
         worker = self._worker_by_token(token)
         payload = payload or {}
         worker_version = str(payload.get("worker_version") or "")
@@ -1122,7 +1305,9 @@ class RemoteManager:
             if remaining <= 0:
                 with self._state_lock:
                     mobile_events = (
-                        self._mobile_events_snapshot_locked(worker) if supports_mobile_events else []
+                        self._mobile_events_snapshot_locked(worker)
+                        if supports_mobile_events
+                        else []
                     )
                 response = {
                     "job": None,
@@ -1138,7 +1323,9 @@ class RemoteManager:
             except TimeoutError:
                 with self._state_lock:
                     mobile_events = (
-                        self._mobile_events_snapshot_locked(worker) if supports_mobile_events else []
+                        self._mobile_events_snapshot_locked(worker)
+                        if supports_mobile_events
+                        else []
                     )
                 response = {
                     "job": None,
@@ -1573,7 +1760,11 @@ async def worker_event_endpoint(request: Any):  # noqa: ANN201
 
     try:
         return JSONResponse(
-            _ok(await remote_manager().submit_worker_event(_bearer_token(request), await request.json()))
+            _ok(
+                await remote_manager().submit_worker_event(
+                    _bearer_token(request), await request.json()
+                )
+            )
         )
     except Exception as exc:
         return _error(str(exc), type(exc).__name__, 401)
@@ -1928,11 +2119,7 @@ def _worker_upload_url(
     raw_stdout = completed.stdout or b""
     raw_stderr = completed.stderr or b""
     stdout = raw_stdout.encode() if isinstance(raw_stdout, str) else raw_stdout
-    stderr = (
-        raw_stderr
-        if isinstance(raw_stderr, str)
-        else raw_stderr.decode(errors="replace")
-    )
+    stderr = raw_stderr if isinstance(raw_stderr, str) else raw_stderr.decode(errors="replace")
     raw_marker = marker.encode("ascii")
     body, separator, raw_status = stdout.rpartition(raw_marker)
     if completed.returncode != 0:
@@ -2099,8 +2286,11 @@ async def execute_worker_tool(tool: str, args: dict[str, Any]) -> Any:
     from .execution_scope import execution_machine, execution_session
 
     audit_context = (
-        audit_request_context(actor="control", ingress="control", logical_session=logical_session_id)
-        if control_actor else contextlib.nullcontext()
+        audit_request_context(
+            actor="control", ingress="control", logical_session=logical_session_id
+        )
+        if control_actor
+        else contextlib.nullcontext()
     )
     with execution_session(logical_session_id), execution_machine(execution_node), audit_context:
         if human:
@@ -2720,9 +2910,7 @@ def _worker_post_json(
     body = json.dumps(payload).encode("utf-8")
     request_headers = headers or {}
     if shutil.which("curl"):
-        return _worker_post_json_with_curl(
-            url, body, request_headers, timeout, connect_timeout
-        )
+        return _worker_post_json_with_curl(url, body, request_headers, timeout, connect_timeout)
     if timeout is not None and parsed.path.endswith(f"{REMOTE_API_PREFIX}/poll"):
         raise RuntimeError("curl is required for bounded worker poll requests")
     return _worker_post_json_with_urllib(url, body, request_headers, timeout)
@@ -2975,7 +3163,7 @@ async def _execute_worker_job_with_heartbeat(
 async def _worker_job_notification_loop(server: str, headers: dict[str, str]) -> None:
     while True:
         try:
-            events = await collect_pending_job_notifications()
+            events = await collect_pending_job_events()
             for event in events:
                 try:
                     response = await asyncio.to_thread(
@@ -2987,7 +3175,7 @@ async def _worker_job_notification_loop(server: str, headers: dict[str, str]) ->
                     )
                     data = response.get("data", {}) if isinstance(response, dict) else {}
                     if data.get("accepted"):
-                        mark_job_notification_sent(str(event.get("id") or ""))
+                        mark_job_event_uploaded(str(event.get("id") or ""))
                 except Exception as exc:  # noqa: BLE001
                     if not _worker_error_is_retryable(exc):
                         _worker_log_retry("job notification", exc, 5)

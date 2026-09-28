@@ -437,6 +437,7 @@ if _PYDANTIC_AVAILABLE:
         remote_mobile_apns_key_path: str | None = None
         remote_mobile_apns_topic: str = "com.xycdev.lsmmobileworker"
         remote_mobile_apns_min_wake_interval_s: int = 60
+        morrows_job_event_url: str = "http://127.0.0.1:8787/api/internal/lsm/job-events"
 
         # Persistent JSON-only clients bootstrap with a short-lived invitation,
         # then keep only an owner-readable bearer configuration on the client.
@@ -680,6 +681,7 @@ else:
         remote_mobile_apns_key_path: str | None = None
         remote_mobile_apns_topic: str = "com.xycdev.lsmmobileworker"
         remote_mobile_apns_min_wake_interval_s: int = 60
+        morrows_job_event_url: str = "http://127.0.0.1:8787/api/internal/lsm/job-events"
 
         container_client_invite_ttl_s: int = 600
         container_client_token_ttl_s: int = 86_400

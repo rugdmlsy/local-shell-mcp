@@ -221,3 +221,170 @@ async def test_session_watchdog_reports_goal_lease_expiry_without_claiming_exact
     assert "30 min" in calls[0]["body"]
     assert "may have been interrupted" in calls[0]["body"]
     assert "platform timeout reached" not in calls[0]["body"].lower()
+
+
+@pytest.mark.asyncio
+async def test_tracked_job_terminal_has_independent_idempotent_mobile_and_morrows_consumers(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("LOCAL_SHELL_MCP_WORKSPACE_ROOT", str(tmp_path))
+    monkeypatch.setenv("LOCAL_SHELL_MCP_STATE_DIR", str(tmp_path / ".state"))
+    get_settings.cache_clear()
+
+    manager = remote.RemoteManager()
+    manager._registry_loaded = True
+    desktop = remote.RemoteWorker("desktop", "token-desktop", capabilities=["shell", "jobs"])
+    iphone = remote.RemoteWorker(
+        "iphone", "token-ios", capabilities=["mobile", "mobile.controller_events"]
+    )
+    manager.workers = {desktop.name: desktop, iphone.name: iphone}
+    manager.tokens = {desktop.token: desktop.name, iphone.token: iphone.name}
+    monkeypatch.setattr(manager, "_wake_is_configured", lambda _worker: False)
+
+    morrows_deliveries: list[str] = []
+
+    async def fake_morrows_delivery(event):
+        morrows_deliveries.append(str(event["id"]))
+
+    monkeypatch.setattr(manager, "_deliver_job_event_to_morrows", fake_morrows_delivery)
+
+    payload = {
+        "id": "job-finish:tracked:1",
+        "type": "tracked_job_terminal",
+        "title": "Experiment complete",
+        "body": "succeeded · exit 0",
+        "data": {
+            "job_id": "job-tracked",
+            "logical_session_id": "s_morrows",
+            "attempt": 1,
+            "status": "succeeded",
+            "exit_code": 0,
+            "completed_at": 123.0,
+            "terminal_reason": "process exited successfully",
+            "summary_ref": "work/report.json",
+            "result": {"records": 147},
+            "notify_on_finish": True,
+        },
+    }
+
+    first = await manager.submit_worker_event(desktop.token, payload)
+    assert first["accepted"] is True
+    assert first["duplicate"] is False
+    assert morrows_deliveries == ["job-finish:tracked:1"]
+    assert [event["id"] for event in iphone.pending_events] == ["job-finish:tracked:1"]
+    assert iphone.pending_events[0]["type"] == "job_completed"
+
+    second = await manager.submit_worker_event(desktop.token, payload)
+    assert second["accepted"] is True
+    assert second["duplicate"] is True
+    assert morrows_deliveries == ["job-finish:tracked:1"]
+    assert [event["id"] for event in iphone.pending_events] == ["job-finish:tracked:1"]
+
+    saved = next(event for event in manager.job_events if event["id"] == "job-finish:tracked:1")
+    assert saved["mobile_delivered_at"]
+    assert saved["morrows_delivered_at"]
+
+
+def test_job_event_retention_never_prunes_undelivered_events(tmp_path, monkeypatch):
+    monkeypatch.setenv("LOCAL_SHELL_MCP_WORKSPACE_ROOT", str(tmp_path))
+    monkeypatch.setenv("LOCAL_SHELL_MCP_STATE_DIR", str(tmp_path / ".state"))
+    get_settings.cache_clear()
+    monkeypatch.setattr(remote, "MAX_REMOTE_JOB_EVENTS", 2)
+
+    manager = remote.RemoteManager()
+    manager.job_events = [
+        {
+            "id": "delivered-old",
+            "mobile_delivered_at": 1.0,
+            "morrows_delivered_at": 1.0,
+        },
+        {
+            "id": "pending-morrows",
+            "mobile_delivered_at": 1.0,
+            "morrows_delivered_at": None,
+        },
+        {
+            "id": "pending-mobile",
+            "mobile_delivered_at": None,
+            "morrows_delivered_at": 1.0,
+        },
+    ]
+    manager._prune_job_events_locked()
+
+    assert [event["id"] for event in manager.job_events] == [
+        "pending-morrows",
+        "pending-mobile",
+    ]
+
+    manager.job_events.append(
+        {
+            "id": "pending-both",
+            "mobile_delivered_at": None,
+            "morrows_delivered_at": None,
+        }
+    )
+    manager._prune_job_events_locked()
+    assert [event["id"] for event in manager.job_events] == [
+        "pending-morrows",
+        "pending-mobile",
+        "pending-both",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_morrows_job_event_push_reuses_lsm_control_key(tmp_path, monkeypatch):
+    monkeypatch.setenv("LOCAL_SHELL_MCP_WORKSPACE_ROOT", str(tmp_path))
+    monkeypatch.setenv("LOCAL_SHELL_MCP_STATE_DIR", str(tmp_path / ".state"))
+    monkeypatch.setenv("LOCAL_SHELL_MCP_CONTROL_API_KEY", "shared-control-key")
+    monkeypatch.setenv(
+        "LOCAL_SHELL_MCP_MORROWS_JOB_EVENT_URL",
+        "http://127.0.0.1:8787/api/internal/lsm/job-events",
+    )
+    get_settings.cache_clear()
+
+    captured = {}
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):  # noqa: ARG002
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):  # noqa: ARG002
+            return False
+
+        async def post(self, url, headers=None, json=None):
+            captured["url"] = url
+            captured["headers"] = dict(headers or {})
+            captured["json"] = dict(json or {})
+            return FakeResponse()
+
+    monkeypatch.setattr(remote.httpx, "AsyncClient", FakeClient)
+
+    manager = remote.RemoteManager()
+    await manager._deliver_job_event_to_morrows(
+        {
+            "id": "job-finish:auth:1",
+            "data": {
+                "job_id": "job-auth",
+                "source_machine": "morrow-node-01",
+                "logical_session_id": "s_auth",
+                "attempt": 1,
+                "status": "succeeded",
+                "exit_code": 0,
+                "completed_at": 123.0,
+                "terminal_reason": "process exited successfully",
+            },
+        }
+    )
+
+    assert captured["url"].endswith("/api/internal/lsm/job-events")
+    assert captured["headers"] == {"X-LSM-Control-Key": "shared-control-key"}
+    assert captured["json"]["event_id"] == "job-finish:auth:1"
+    assert captured["json"]["logical_session_id"] == "s_auth"
+    assert captured["json"]["completed_at"] == "1970-01-01T00:02:03Z"

@@ -1337,6 +1337,108 @@ async def collect_pending_job_notifications() -> list[dict[str, Any]]:
     return events
 
 
+def _terminal_reason(job: dict[str, Any]) -> str:
+    error = str(job.get("error") or "").strip()
+    if error:
+        return error[:1_000]
+    status = str(job.get("status") or "unknown")
+    exit_code = job.get("exit_code")
+    if status == "succeeded":
+        return "process exited successfully"
+    if status in {"failed", "exited"} and exit_code is not None:
+        return f"process exited with code {exit_code}"
+    if status == "stopped":
+        return "job was stopped"
+    if status == "lost":
+        return "job session disappeared without a durable completion record"
+    return f"job reached terminal status {status}"
+
+
+def _job_terminal_event(job: dict[str, Any], now: float) -> dict[str, Any]:
+    event_id = str(job.get("terminal_event_id") or job.get("notify_event_id") or "")
+    if not event_id:
+        event_id = (
+            f"job-finish:{job.get('job_id')}:{int(job.get('attempts') or 1)}:"
+            f"{int(float(job.get('completed_at') or now) * 1000)}"
+        )
+    job["terminal_event_id"] = event_id
+    # Keep the legacy notification identifier aligned so an opted-in mobile
+    # notification and the generic terminal event describe the same job attempt.
+    job.setdefault("notify_event_id", event_id)
+    status = str(job.get("status") or "completed")
+    exit_code = job.get("exit_code")
+    if status == "exited":
+        status = "succeeded" if exit_code == 0 else "failed"
+    terminal_reason = _terminal_reason(job)
+    body = status
+    if exit_code is not None:
+        body += f" · exit {exit_code}"
+    if terminal_reason:
+        body += f" · {terminal_reason[:300]}"
+    return {
+        "id": event_id,
+        "type": "tracked_job_terminal",
+        "title": str(
+            job.get("notify_title") or f"LSM job: {job.get('name') or job.get('job_id')}"
+        )[:200],
+        "body": body[:1_000],
+        "data": {
+            "job_id": job.get("job_id"),
+            "name": job.get("name"),
+            "source_machine": job.get("machine") or "local",
+            "logical_session_id": job.get("logical_session_id"),
+            "attempt": int(job.get("attempts") or 1),
+            "status": status,
+            "exit_code": exit_code,
+            "completed_at": job.get("completed_at"),
+            "terminal_reason": terminal_reason,
+            "summary_ref": job.get("notify_summary_path"),
+            "result": job.get("result"),
+            "notify_on_finish": bool(job.get("notify_on_finish", False)),
+        },
+    }
+
+
+async def collect_pending_job_events() -> list[dict[str, Any]]:
+    """Return every not-yet-uploaded durable terminal job event.
+
+    This is deliberately independent from mobile notification opt-in. A worker
+    marks an event uploaded only after the controller has durably ingested it;
+    controller-side consumers then retry on their own schedules.
+    """
+    active = (
+        set()
+        if get_settings().disable_local
+        else _active_session_ids(await list_shells())
+    )
+    now = _utc()
+    events: list[dict[str, Any]] = []
+    with _store_transaction() as store:
+        jobs = [_refresh_job_status(job, active, now) for job in store.get("jobs", [])]
+        store["jobs"] = jobs
+        for job in jobs:
+            if job.get("status") not in TERMINAL_STATUSES:
+                continue
+            if job.get("terminal_event_uploaded_at"):
+                continue
+            events.append(_job_terminal_event(job, now))
+    return events
+
+
+def mark_job_event_uploaded(event_id: str) -> bool:
+    normalized = str(event_id).strip()
+    if not normalized:
+        return False
+    with _store_transaction() as store:
+        for job in store.get("jobs", []):
+            known_id = str(job.get("terminal_event_id") or job.get("notify_event_id") or "")
+            if known_id != normalized:
+                continue
+            job["terminal_event_uploaded_at"] = _utc()
+            return True
+    return False
+
+
 def mark_job_notification_sent(event_id: str) -> bool:
     normalized = str(event_id).strip()
     if not normalized:
@@ -1463,6 +1565,8 @@ async def _retry_managed_job(
             job["notify_summary_path"] = notify_summary_path
         job.pop("notify_event_id", None)
         job.pop("notify_sent_at", None)
+        job.pop("terminal_event_id", None)
+        job.pop("terminal_event_uploaded_at", None)
         job["notify_delivery_version"] = 1
         job.update(
             {
@@ -1605,6 +1709,8 @@ async def retry_job(
                 job["notify_summary_path"] = notify_summary_path
             job.pop("notify_event_id", None)
             job.pop("notify_sent_at", None)
+            job.pop("terminal_event_id", None)
+            job.pop("terminal_event_uploaded_at", None)
             job["notify_delivery_version"] = 1
             job.update(
                 {

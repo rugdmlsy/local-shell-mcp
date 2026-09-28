@@ -6,7 +6,7 @@ import time
 from typing import Any
 
 from .audit import audit
-from .jobs import collect_pending_job_notifications, mark_job_notification_sent
+from .jobs import collect_pending_job_events, mark_job_event_uploaded
 from .remote import remote_manager
 from .session_runtime import get_session_runtime_manager
 
@@ -22,19 +22,16 @@ def _unfinished(plan: dict[str, Any]) -> bool:
 
 
 async def _dispatch_local_job_notifications() -> None:
-    for event in await collect_pending_job_notifications():
+    manager = remote_manager()
+    for event in await collect_pending_job_events():
         data = dict(event.get("data") or {})
-        data.setdefault("source_machine", "controller")
-        result = await remote_manager().queue_mobile_event(
-            event_id=str(event["id"]),
-            event_type=str(event.get("type") or "job_completed"),
-            title=str(event.get("title") or "LSM job completed"),
-            body=str(event.get("body") or "Tracked job completed"),
-            data=data,
-            wake_reason="job_completed",
+        result = await manager.ingest_job_event(
+            event,
+            source_machine=str(data.get("source_machine") or "local"),
         )
         if result.get("accepted"):
-            mark_job_notification_sent(str(event["id"]))
+            mark_job_event_uploaded(str(event["id"]))
+    await manager.dispatch_pending_job_events()
 
 
 async def _dispatch_session_notifications() -> None:
