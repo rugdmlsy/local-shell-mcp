@@ -7,6 +7,7 @@ import subprocess
 import sys
 import time
 from contextlib import contextmanager
+from pathlib import Path
 
 import httpx
 
@@ -88,7 +89,13 @@ _run_uvicorn(_build_mcp_http_app(mcp), get_settings())
     @contextmanager
     def server(name, stateful=False):
         # Retain startup diagnostics while guaranteeing cleanup on assertion failure.
-        environment = {**os.environ, "TEST_STATEFUL": "1" if stateful else "0"}
+        environment = {
+            **os.environ,
+            "TEST_STATEFUL": "1" if stateful else "0",
+            # Remote workers inject their own runtime into PYTHONPATH. Test the
+            # checkout under qualification, never that worker's deployed copy.
+            "PYTHONPATH": str(Path(__file__).resolve().parents[1] / "src"),
+        }
         with (tmp_path / f"{name}.log").open("w+") as log:
             process = subprocess.Popen(
                 [sys.executable, "-c", code], env=environment, stdout=log, stderr=log
