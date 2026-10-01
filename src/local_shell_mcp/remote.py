@@ -1009,6 +1009,9 @@ class RemoteManager:
 
     async def _deliver_job_event_to_morrows(self, event: dict[str, Any]) -> None:
         settings = get_settings()
+        callback_url = str(settings.morrows_job_event_url or "").strip()
+        if not callback_url:
+            return
         control_key = str(settings.control_api_key or "").strip()
         if not control_key:
             raise RuntimeError("LSM control key is not configured")
@@ -1020,7 +1023,7 @@ class RemoteManager:
             )
         await asyncio.to_thread(
             _post_json_without_environment,
-            settings.morrows_job_event_url,
+            callback_url,
             {"event_id": event["id"], **data},
             {"X-LSM-Control-Key": control_key},
             20.0,

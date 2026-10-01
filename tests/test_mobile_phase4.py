@@ -331,6 +331,23 @@ def test_job_event_retention_never_prunes_undelivered_events(tmp_path, monkeypat
     ]
 
 
+
+
+@pytest.mark.asyncio
+async def test_morrows_job_event_push_is_disabled_by_default(tmp_path, monkeypatch):
+    monkeypatch.setenv("LOCAL_SHELL_MCP_WORKSPACE_ROOT", str(tmp_path))
+    monkeypatch.setenv("LOCAL_SHELL_MCP_STATE_DIR", str(tmp_path / ".state"))
+    monkeypatch.setenv("LOCAL_SHELL_MCP_CONTROL_API_KEY", "shared-control-key")
+    monkeypatch.delenv("LOCAL_SHELL_MCP_MORROWS_JOB_EVENT_URL", raising=False)
+    get_settings.cache_clear()
+
+    def fail_post(*args, **kwargs):
+        raise AssertionError("standalone LSM should not post Morrows events unless explicitly configured")
+
+    monkeypatch.setattr(remote, "_post_json_without_environment", fail_post)
+    manager = remote.RemoteManager()
+    await manager._deliver_job_event_to_morrows({"id": "disabled", "data": {}})
+
 @pytest.mark.asyncio
 async def test_morrows_job_event_push_reuses_lsm_control_key(tmp_path, monkeypatch):
     monkeypatch.setenv("LOCAL_SHELL_MCP_WORKSPACE_ROOT", str(tmp_path))
